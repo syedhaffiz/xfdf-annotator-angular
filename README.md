@@ -52,20 +52,28 @@ All of these are wired together by querying the host page for a fixed set of ele
 
 ### 2.1 Install the package
 
-The Angular reference project consumes the library as a packed tarball. Replace the path with your distribution method (npm registry, private feed, or local file).
+`xfdf-annotator` is published to npm: <https://www.npmjs.com/package/xfdf-annotator>.
+
+```bash
+npm install xfdf-annotator fabric pdfjs-dist
+# or
+yarn add xfdf-annotator fabric pdfjs-dist
+# or
+pnpm add xfdf-annotator fabric pdfjs-dist
+```
+
+`fabric` and `pdfjs-dist` are runtime peers — install them in the host application even if your bundler hoists them transitively.
 
 ```jsonc
-// package.json
+// package.json (resulting fragment)
 {
   "dependencies": {
-    "xfdf-annotator": "file:../xfdf-annotator-v1/xfdf-annotator-0.1.0.tgz",
+    "xfdf-annotator": "^0.1.0",
     "fabric": "^7.3.1",
     "pdfjs-dist": "^5.6.205"
   }
 }
 ```
-
-`fabric` and `pdfjs-dist` are runtime peers — install them in the host application even if your bundler hoists them transitively.
 
 ### 2.2 Configure the PDF.js worker
 

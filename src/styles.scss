@@ -1,0 +1,358 @@
+// ─────────────────────────────────────────────────────────────────────
+//  XFDF Annotator — Bootstrap 5 + LeptonX-inspired theme (light + dark)
+// ─────────────────────────────────────────────────────────────────────
+
+@import "bootstrap-icons/font/bootstrap-icons.scss";
+@import "bootstrap/scss/functions";
+
+// ── Brand palette (applies to both themes) ──────────────────────────
+$primary:   #7048e8;   // LeptonX brand purple
+$secondary: #6c7086;
+$success:   #4ec9a3;
+$danger:    #e34d65;
+$warning:   #f5b840;
+$info:      #4dabf7;
+
+// ── Component tweaks ────────────────────────────────────────────────
+$component-active-bg:        $primary;
+$component-active-color:     #fff;
+
+$btn-border-radius:          .375rem;
+$btn-border-radius-sm:       .25rem;
+$btn-focus-box-shadow:       0 0 0 .15rem rgba($primary, .35);
+
+$input-focus-border-color:   $primary;
+$input-focus-box-shadow:     0 0 0 .15rem rgba($primary, .25);
+$form-range-thumb-bg:        $primary;
+$form-range-thumb-active-bg: tint-color($primary, 15%);
+
+// ── Bootstrap proper ────────────────────────────────────────────────
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+@import "bootstrap/scss/maps";
+@import "bootstrap/scss/mixins";
+@import "bootstrap/scss/utilities";
+@import "bootstrap/scss/root";
+@import "bootstrap/scss/reboot";
+@import "bootstrap/scss/type";
+@import "bootstrap/scss/containers";
+@import "bootstrap/scss/grid";
+@import "bootstrap/scss/forms";
+@import "bootstrap/scss/buttons";
+@import "bootstrap/scss/button-group";
+@import "bootstrap/scss/nav";
+@import "bootstrap/scss/navbar";
+@import "bootstrap/scss/card";
+@import "bootstrap/scss/dropdown";
+@import "bootstrap/scss/close";
+@import "bootstrap/scss/modal";
+@import "bootstrap/scss/offcanvas";
+@import "bootstrap/scss/toasts";
+@import "bootstrap/scss/popover";
+@import "bootstrap/scss/spinners";
+@import "bootstrap/scss/helpers";
+@import "bootstrap/scss/utilities/api";
+
+// ── Theme-specific surfaces ─────────────────────────────────────────
+// Dark theme: deep near-black surfaces with subtle purple tinting.
+[data-bs-theme="dark"] {
+  --bs-body-bg:                #1a1d21;
+  --bs-body-color:             #d4d6da;
+  --bs-secondary-bg:           #232529;
+  --bs-secondary-color:        rgba(212, 214, 218, .65);
+  --bs-tertiary-bg:            #161719;
+  --bs-border-color:           #2c2f36;
+  --bs-border-color-translucent: rgba(255, 255, 255, .08);
+}
+
+// Light theme: clean off-white surfaces, light grey borders.
+[data-bs-theme="light"] {
+  --bs-body-bg:                #ffffff;
+  --bs-body-color:             #1f2329;
+  --bs-secondary-bg:           #f6f7f9;
+  --bs-secondary-color:        #6b7280;
+  --bs-tertiary-bg:            #f1f3f5;
+  --bs-border-color:           #e3e6eb;
+  --bs-border-color-translucent: rgba(0, 0, 0, .06);
+}
+
+html, body { height: 100%; }
+
+// Nested flex columns need min-height:0 for inner overflow:auto to work.
+// Without this, #document-viewport grows to fit content instead of scrolling.
+#viewer-panel { min-height: 0; }
+
+// ─────────────────────────────────────────────────────────────────────
+//  Library-required structural rules
+//  (xfdf-annotator queries these IDs and toggles inline display:flex /
+//   display:none. Bootstrap utility classes use !important and would
+//   block the library's reveals — so initial hidden state lives here.)
+// ─────────────────────────────────────────────────────────────────────
+#empty-state,
+#document-viewport,
+#loading-overlay,
+#comment-thread-panel,
+#new-comment-popup { display: none; }
+
+#loading-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, .35); z-index: 50;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: .75rem;
+}
+
+#document-viewport {
+  flex: 1; overflow: auto; padding: 4.5rem 1rem 1rem;
+  background: var(--bs-tertiary-bg);
+  align-items: flex-start; justify-content: center;
+
+  // Hidden scrollbar — pages remain scrollable via wheel / touch / keyboard.
+  scrollbar-width: none;          // Firefox
+  -ms-overflow-style: none;       // legacy Edge / IE
+  &::-webkit-scrollbar { width: 0; height: 0; display: none; }
+}
+#pages-container {
+  // Tighter inter-page gap so the next page is just a short scroll away.
+  gap: 1rem !important;
+}
+#pages-container {
+  display: flex; flex-direction: column; align-items: center; gap: 1.5rem;
+}
+
+.page-wrapper { position: relative; }
+.page-number-label {
+  text-align: center; font-size: .7rem;
+  color: var(--bs-secondary-color);
+  margin-bottom: .25rem; user-select: none;
+}
+.page-layers {
+  position: relative; background: #fff;
+  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .15);
+  border: 1px solid var(--bs-border-color);
+}
+[data-bs-theme="dark"] .page-layers {
+  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
+  border-color: transparent;
+}
+.page-layers canvas.pdf-layer,
+.page-layers img.image-layer { display: block; }
+
+#empty-state {
+  flex: 1; flex-direction: column; align-items: center; justify-content: center;
+  gap: .75rem; color: var(--bs-secondary-color);
+}
+
+// View-mode dims tool buttons (library toggles `.view-mode` on toolbar)
+#toolbar-panel.view-mode .tool-btn { opacity: .35; pointer-events: none; }
+
+// ─────────────────────────────────────────────────────────────────────
+//  Floating annotation toolbar — pill, tool buttons
+// ─────────────────────────────────────────────────────────────────────
+.tool-btn {
+  width: 2rem; height: 2rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.tool-btn .bi { font-size: 1rem; line-height: 1; }
+
+// Brush-size range — Bootstrap's default track blends into the pill in dark
+// mode. Force a visibly lighter track + slightly larger thumb.
+.form-range {
+  &::-webkit-slider-runnable-track { background: var(--bs-border-color); }
+  &::-moz-range-track              { background: var(--bs-border-color); }
+}
+[data-bs-theme="dark"] .form-range {
+  &::-webkit-slider-runnable-track { background: #4a4f5a; }
+  &::-moz-range-track              { background: #4a4f5a; }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Activity log entries (rendered by the library — IDs/classes fixed)
+// ─────────────────────────────────────────────────────────────────────
+.log-empty {
+  text-align: center; color: var(--bs-secondary-color);
+  font-size: .8rem; padding: 1.5rem 0;
+}
+.log-entry {
+  background: var(--bs-tertiary-bg); border-radius: .375rem;
+  padding: .5rem .625rem; margin-bottom: .375rem;
+  font-size: .75rem; border-left: 3px solid var(--bs-border-color);
+}
+.log-entry.action-added   { border-left-color: var(--bs-success); }
+.log-entry.action-removed { border-left-color: var(--bs-danger); }
+.log-entry-header {
+  display: flex; justify-content: space-between; margin-bottom: .25rem;
+}
+.log-badge {
+  font-size: .625rem; padding: .0625rem .375rem; border-radius: .1875rem;
+  background: var(--bs-border-color); color: var(--bs-body-color);
+  text-transform: uppercase; font-weight: 600;
+}
+.log-badge.added   { background: rgba(78, 201, 163, .15); color: var(--bs-success); }
+.log-badge.removed { background: rgba(227, 77, 101, .15); color: var(--bs-danger); }
+.log-time   { color: var(--bs-secondary-color); font-size: .6875rem; }
+.log-detail { display: flex; gap: .5rem; color: var(--bs-secondary-color); }
+.log-tool-name { font-weight: 600; color: var(--bs-body-color); }
+
+// ─────────────────────────────────────────────────────────────────────
+//  Comment pins & thread panel (library injects these by ID/class)
+// ─────────────────────────────────────────────────────────────────────
+.comment-pin {
+  position: absolute; cursor: pointer; z-index: 20;
+  transform: translate(-50%, -100%);
+}
+.comment-pin-badge {
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  background: var(--bs-primary); color: #fff;
+  font-size: .6875rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.comment-pin.active .comment-pin-badge { background: var(--bs-danger); }
+.comment-pin-tip {
+  width: 0; height: 0; margin: 0 auto;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 6px solid var(--bs-primary);
+}
+.comment-pin.active .comment-pin-tip { border-top-color: var(--bs-danger); }
+
+#comment-thread-panel {
+  position: fixed; width: 18rem; max-height: 22.5rem;
+  background: var(--bs-secondary-bg);
+  border: 1px solid var(--bs-border-color); border-radius: .625rem;
+  box-shadow: 0 .5rem 1.5rem rgba(0, 0, 0, .25); z-index: 200;
+  flex-direction: column; overflow: hidden;
+}
+.ctp-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .625rem .75rem; border-bottom: 1px solid var(--bs-border-color);
+  font-weight: 600; font-size: .8125rem;
+}
+.ctp-close {
+  background: none; border: none; color: var(--bs-secondary-color);
+  font-size: 1.125rem; cursor: pointer; line-height: 1;
+}
+.ctp-close:hover  { color: var(--bs-body-color); }
+.ctp-messages     { flex: 1; overflow-y: auto; padding: .5rem .75rem; }
+.ctp-message      { margin-bottom: .625rem; }
+.ctp-msg-header   { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .125rem; }
+.ctp-msg-user     { font-weight: 600; font-size: .75rem; color: var(--bs-info); }
+.ctp-msg-time     { font-size: .625rem; color: var(--bs-secondary-color); }
+.ctp-msg-text     { font-size: .8125rem; line-height: 1.4; }
+.ctp-reply-bar    {
+  display: flex; gap: .375rem; padding: .5rem .75rem;
+  border-top: 1px solid var(--bs-border-color);
+}
+.ctp-reply-input  {
+  flex: 1; padding: .375rem .625rem; border-radius: .375rem;
+  border: 1px solid var(--bs-border-color);
+  background: var(--bs-body-bg); color: var(--bs-body-color);
+  font-size: .75rem; outline: none;
+}
+.ctp-reply-input:focus { border-color: var(--bs-primary); }
+.ctp-reply-btn {
+  padding: .375rem .75rem; border: none; border-radius: .375rem;
+  background: var(--bs-primary); color: #fff;
+  font-size: .75rem; font-weight: 600; cursor: pointer;
+}
+
+#new-comment-popup {
+  position: fixed; width: 16.25rem;
+  background: var(--bs-secondary-bg);
+  border: 1px solid var(--bs-border-color); border-radius: .625rem;
+  box-shadow: 0 .5rem 1.5rem rgba(0, 0, 0, .25); z-index: 200;
+  padding: .75rem;
+}
+
+// Polygon hint toast (positioned bottom-center)
+#polygon-hint {
+  position: fixed;
+  left: 50%; bottom: 1.5rem;
+  transform: translateX(-50%);
+  z-index: 1080;
+}
+
+// Custom scrollbar
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bs-border-color); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--bs-secondary-color); }
+
+// ─────────────────────────────────────────────────────────────────────
+//  PDF thumbnails sidebar
+// ─────────────────────────────────────────────────────────────────────
+.pdf-thumbs-panel { width: 10rem; }
+
+.pdf-thumb {
+  background: var(--bs-body-bg);
+  border-color: var(--bs-border-color) !important;
+  border-radius: .375rem;
+  transition: border-color .15s, box-shadow .15s;
+
+  &:hover { border-color: var(--bs-primary) !important; }
+  &.active {
+    border-color: var(--bs-primary) !important;
+    box-shadow: 0 0 0 .15rem rgba(112, 72, 232, .25);
+  }
+
+  .thumb-canvas-host {
+    width: 100%; height: 9rem;
+    overflow: hidden; background: #fff;
+    canvas { width: 100%; height: auto; display: block; }
+  }
+}
+
+.thumb-placeholder {
+  width: 7rem; height: 8rem;
+  background: var(--bs-tertiary-bg);
+  border-radius: .25rem;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: .55; }
+  50%      { opacity: .85; }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Assets panel
+// ─────────────────────────────────────────────────────────────────────
+.assets-group-header {
+  color: var(--bs-body-color);
+  &:hover { background: var(--bs-tertiary-bg); }
+}
+
+.assets-grid {
+  // 6 columns mirrors the reference design at this width.
+  grid-template-columns: repeat(6, 1fr);
+}
+
+.asset-tile {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--bs-body-bg);
+  border-color: var(--bs-border-color) !important;
+  padding: 0; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, transform .1s;
+
+  &:hover {
+    border-color: var(--bs-primary) !important;
+    box-shadow: 0 0 0 .12rem rgba(112, 72, 232, .25);
+  }
+  &.armed {
+    border-color: var(--bs-primary) !important;
+    background: rgba(112, 72, 232, .12);
+    box-shadow: 0 0 0 .15rem rgba(112, 72, 232, .35);
+  }
+  &:active { transform: scale(.97); }
+
+  img {
+    max-width: 70%; max-height: 70%;
+    object-fit: contain; pointer-events: none; // so click/dragstart fires on the button
+    color: var(--bs-body-color); // currentColor SVGs follow text color
+  }
+}
+
+// While an asset is armed, every page in the viewer becomes a crosshair drop zone.
+#viewer-panel.asset-armed .page-layers,
+#viewer-panel.asset-armed .page-layers * {
+  cursor: crosshair !important;
+}

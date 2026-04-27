@@ -1,0 +1,236 @@
+<div class="vh-100 d-flex flex-column overflow-hidden">
+
+  <!-- Top bar (with view tabs in-line, not floating) -->
+  <app-top-bar
+    [toolsTabActive]="centerTab() === 'tools'"
+    [logTabActive]="logOpen()"
+    [assetsTabActive]="assetsOpen()"
+    [thumbsOpen]="thumbsOpen()"
+    [openMenuOpen]="openMenuOpen()"
+    (modeChange)="setMode($event)"
+    (toolsTabClick)="toggleToolsTab()"
+    (logTabClick)="toggleLog()"
+    (assetsTabClick)="toggleAssets()"
+    (thumbsToggle)="toggleThumbs()"
+    (openMenuToggle)="toggleOpenMenu($event)"
+    (saveClick)="saveXFDF()"
+    (loadXfdfClick)="xfdfInput.click()"
+  ></app-top-bar>
+
+  <!-- Body row: thumbnails | viewer -->
+  <div class="d-flex flex-grow-1" style="min-height: 0;">
+
+    <app-pdf-thumbnails [open]="thumbsOpen()"></app-pdf-thumbnails>
+
+    <main id="viewer-panel"
+          class="flex-grow-1 position-relative d-flex flex-column"
+          style="min-width: 0;"
+          [class.asset-armed]="armedAsset() !== null"
+          (click)="onPageClickCapture($event)">
+
+      <!-- Floating annotation toolbar (under the navbar tabs) -->
+      @if (centerTab() === 'tools') {
+        <div class="position-absolute start-50 translate-middle-x mt-3"
+             style="top: 0; z-index: 60;"
+             [class.view-mode]="annotator.mode() === 'view'">
+          <app-annotation-toolbar [tools]="tools"></app-annotation-toolbar>
+        </div>
+      }
+
+      <!-- Empty state -->
+      <div id="empty-state">
+        <i class="bi bi-file-earmark-text" style="font-size: 3rem;"></i>
+        <p class="m-0">Open a PDF or image to start annotating</p>
+        <p class="text-secondary small m-0">or drag &amp; drop a file anywhere</p>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-primary btn-sm px-3" (click)="fileInput.click()">
+            <i class="bi bi-file-earmark me-1"></i> Open File
+          </button>
+          <button type="button" class="btn btn-outline-secondary btn-sm px-3"
+                  (click)="openUrlDialog('direct')">
+            <i class="bi bi-link-45deg me-1"></i> From URL
+          </button>
+        </div>
+      </div>
+
+      <!-- Loading overlay -->
+      <div id="loading-overlay">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Loading…</span>
+        </div>
+        <span class="text-body-secondary small">Loading document…</span>
+      </div>
+
+      <!-- Document viewport (hidden scrollbar) -->
+      <div id="document-viewport">
+        <div id="pages-container"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ── Activity Log offcanvas ─────────────────────────────────────── -->
+<app-activity-log [open]="logOpen()" (closed)="closeLog()"></app-activity-log>
+
+<!-- ── Assets offcanvas ───────────────────────────────────────────── -->
+<app-assets-panel
+  [open]="assetsOpen()"
+  [armedAssetId]="armedAsset()?.id ?? null"
+  (closed)="closeAssets()"
+  (assetClick)="onAssetClick($event)"
+></app-assets-panel>
+
+<!-- ── Polygon hint ───────────────────────────────────────────────── -->
+<div id="polygon-hint"
+     class="toast align-items-center text-bg-dark border"
+     [class.show]="annotator.tool() === 'polygon'">
+  <div class="d-flex">
+    <div class="toast-body small">
+      Click to add points · <kbd>Enter</kbd> to close · <kbd>Esc</kbd> to cancel
+    </div>
+  </div>
+</div>
+
+<!-- ── Comment thread panel (library hooks IDs/classes) ──────────── -->
+<div id="comment-thread-panel">
+  <div class="ctp-header">
+    <span class="ctp-pin-num"></span>
+    <button type="button" class="ctp-close" aria-label="Close">
+      <i class="bi bi-x-lg"></i>
+    </button>
+  </div>
+  <div class="ctp-messages"></div>
+  <div class="ctp-reply-bar">
+    <input class="ctp-reply-input" type="text" placeholder="Reply…" />
+    <button type="button" class="ctp-reply-btn">Send</button>
+  </div>
+</div>
+
+<!-- ── New comment popup ──────────────────────────────────────────── -->
+<div id="new-comment-popup">
+  <textarea class="form-control form-control-sm" rows="3" placeholder="Add a comment…"></textarea>
+  <div class="d-flex justify-content-end gap-2 mt-2">
+    <button type="button" id="btn-cancel-comment" class="btn btn-sm btn-secondary">Cancel</button>
+    <button type="button" id="btn-post-comment" class="btn btn-sm btn-success">Post</button>
+  </div>
+</div>
+
+<!-- ── Open-file floating menu ──────────────────────────────────────── -->
+@if (openMenuOpen()) {
+  <ul class="dropdown-menu show shadow-sm"
+      role="menu"
+      [style.position]="'fixed'"
+      [style.left.px]="openMenuPos().left"
+      [style.top.px]="openMenuPos().top"
+      [style.z-index]="1070"
+      (click)="$event.stopPropagation()">
+    <li>
+      <button type="button" class="dropdown-item d-flex align-items-center gap-2"
+              (click)="closeOpenMenu(); fileInput.click()">
+        <i class="bi bi-file-earmark"></i> Open file…
+      </button>
+    </li>
+    <li>
+      <button type="button" class="dropdown-item d-flex align-items-center gap-2"
+              (click)="closeOpenMenu(); openUrlDialog('direct')">
+        <i class="bi bi-link-45deg"></i> From URL…
+      </button>
+    </li>
+    <li><hr class="dropdown-divider" /></li>
+    <li>
+      <button type="button" class="dropdown-item d-flex align-items-center gap-2"
+              (click)="closeOpenMenu(); openUrlDialog('blob')">
+        <i class="bi bi-cloud-arrow-down"></i> From API (Blob)…
+      </button>
+    </li>
+    <li>
+      <button type="button" class="dropdown-item d-flex align-items-center gap-2"
+              (click)="closeOpenMenu(); openUrlDialog('dataurl')">
+        <i class="bi bi-cloud-download"></i> From API (Data URL)…
+      </button>
+    </li>
+  </ul>
+}
+
+<!-- ── Drag-and-drop overlay ─────────────────────────────────────── -->
+@if (isDragging()) {
+  <div class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center pe-none"
+       style="z-index: 1090; background: rgba(112, 72, 232, .15);
+              border: .25rem dashed var(--bs-primary); box-sizing: border-box;">
+    <div class="bg-body-secondary border rounded-3 px-4 py-3 d-flex align-items-center gap-3 shadow">
+      <i class="bi bi-cloud-arrow-up-fill text-primary" style="font-size: 2rem;"></i>
+      <div>
+        <div class="fw-semibold">Drop file to open</div>
+        <div class="small text-secondary">PDF or image</div>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- ── URL / API loader modal ────────────────────────────────────── -->
+@if (urlModal().open) {
+  <div class="modal-backdrop fade show" style="z-index: 1055;"></div>
+  <div class="modal d-block fade show" tabindex="-1" role="dialog"
+       style="z-index: 1060;" (click)="closeUrlDialog()">
+    <div class="modal-dialog modal-dialog-centered" (click)="$event.stopPropagation()">
+      <div class="modal-content">
+        <form (submit)="$event.preventDefault(); submitUrl()">
+          <div class="modal-header">
+            <h5 class="modal-title">{{ urlModeLabels[urlModal().mode].title }}</h5>
+            <button type="button" class="btn-close" aria-label="Close"
+                    [disabled]="urlBusy()" (click)="closeUrlDialog()"></button>
+          </div>
+          <div class="modal-body">
+            <label class="form-label small text-secondary">
+              {{ urlModeLabels[urlModal().mode].hint }}
+            </label>
+            <input type="url" class="form-control" autofocus
+                   placeholder="https://example.com/document.pdf"
+                   [value]="urlInput()"
+                   (input)="onUrlInput($event)"
+                   [disabled]="urlBusy()" />
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary"
+                    [disabled]="urlBusy()" (click)="closeUrlDialog()">Cancel</button>
+            <button type="submit" class="btn btn-primary"
+                    [disabled]="urlBusy() || !urlInput().trim()">
+              @if (urlBusy()) {
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+              }
+              {{ urlModeLabels[urlModal().mode].submit }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- ── Hidden file inputs ────────────────────────────────────────── -->
+<input #fileInput type="file" class="d-none"
+       accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.bmp"
+       (change)="onFileChosen($event)" />
+<input #imageInput type="file" class="d-none" accept="image/*" (change)="onImageChosen($event)" />
+<input #xfdfInput type="file" class="d-none" accept=".xfdf,.xml" (change)="onXfdfChosen($event)" />
+
+<!-- ── Bootstrap toast container ─────────────────────────────────── -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080;">
+  @for (t of toasts(); track t.id) {
+    <div class="toast show align-items-center border-0 mb-2"
+         [class.text-bg-success]="t.kind === 'success'"
+         [class.text-bg-danger]="t.kind === 'error'"
+         [class.text-bg-dark]="t.kind === 'info'"
+         role="alert" aria-live="polite" aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body d-flex align-items-center gap-2">
+          <i class="bi"
+             [class.bi-check-circle-fill]="t.kind === 'success'"
+             [class.bi-exclamation-triangle-fill]="t.kind === 'error'"
+             [class.bi-info-circle-fill]="t.kind === 'info'"></i>
+          <span>{{ t.text }}</span>
+        </div>
+      </div>
+    </div>
+  }
+</div>

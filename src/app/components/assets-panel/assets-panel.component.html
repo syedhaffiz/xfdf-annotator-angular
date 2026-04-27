@@ -1,0 +1,86 @@
+<!--
+  Always-rendered, BACKDROP-LESS offcanvas. The document underneath stays
+  interactive so the user can click on a page to place the armed asset.
+-->
+<div class="offcanvas offcanvas-end shadow-lg"
+     tabindex="-1"
+     [class.show]="open()"
+     [style.visibility]="open() ? 'visible' : 'hidden'"
+     style="width: 22rem;">
+
+  <!-- Header -->
+  <div class="offcanvas-header border-bottom">
+    <h5 class="offcanvas-title d-flex align-items-center gap-2 mb-0">
+      <i class="bi bi-collection"></i> Assets
+    </h5>
+    <button type="button" class="btn-close" aria-label="Close" (click)="close()"></button>
+  </div>
+
+  <!-- Armed banner -->
+  @if (armedAssetId()) {
+    <div class="px-3 py-2 small d-flex align-items-center gap-2"
+         style="background: rgba(112, 72, 232, .15); color: var(--bs-primary);">
+      <i class="bi bi-bullseye"></i>
+      <span>Click on a page to place this asset · <kbd>Esc</kbd> to cancel</span>
+    </div>
+  }
+
+  <!-- Search -->
+  <div class="px-3 pt-3 pb-2 border-bottom">
+    <div class="input-group input-group-sm">
+      <span class="input-group-text bg-body border-end-0">
+        <i class="bi bi-search text-secondary"></i>
+      </span>
+      <input type="search"
+             class="form-control border-start-0"
+             placeholder="Search"
+             [value]="query()"
+             (input)="onSearch($event)" />
+    </div>
+  </div>
+
+  <!-- Groups + grid -->
+  <div class="offcanvas-body p-0 overflow-auto">
+    @for (g of visibleGroups(); track g.id) {
+      <section class="border-bottom">
+        <button type="button"
+                class="assets-group-header w-100 d-flex align-items-center justify-content-between
+                       border-0 bg-transparent text-start px-3 py-2"
+                (click)="toggleGroup(g.id)">
+          <span class="d-flex align-items-center gap-2 small fw-semibold">
+            <i class="bi"
+               [class.bi-chevron-down]="!g.collapsed"
+               [class.bi-chevron-right]="g.collapsed"></i>
+            {{ g.name }}
+          </span>
+          <span class="badge text-bg-secondary border fw-normal" style="font-size: .65rem;">
+            {{ g.assets.length }}
+          </span>
+        </button>
+        @if (!g.collapsed) {
+          <div class="assets-grid px-3 pb-3 d-grid gap-2">
+            @for (a of g.assets; track a.id) {
+              <button type="button"
+                      class="asset-tile border rounded d-flex align-items-center justify-content-center"
+                      [class.armed]="armedAssetId() === a.id"
+                      draggable="true"
+                      [title]="a.name"
+                      (click)="onTileClick(a)"
+                      (dragstart)="onAssetDragStart($event, a)">
+                <img [src]="a.dataUrl" [alt]="a.name" />
+              </button>
+            }
+          </div>
+        }
+      </section>
+    }
+
+    @if (visibleGroups().length === 0) {
+      <div class="text-center text-secondary small py-5 px-3">
+        <i class="bi bi-search d-block mb-2" style="font-size: 1.5rem;"></i>
+        No assets match
+        <span class="fw-semibold">"{{ query() }}"</span>
+      </div>
+    }
+  </div>
+</div>

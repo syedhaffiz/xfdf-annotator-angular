@@ -1,0 +1,29 @@
+@if (open()) {
+  <div class="offcanvas-backdrop fade show" (click)="close()" style="z-index: 1044;"></div>
+}
+
+<!-- Always-rendered offcanvas — keeps #log-entries in the DOM at all times. -->
+<div class="offcanvas offcanvas-end"
+     tabindex="-1"
+     [class.show]="open()"
+     [style.visibility]="open() ? 'visible' : 'hidden'"
+     style="width: 20rem;">
+  <div class="offcanvas-header border-bottom">
+    <h5 class="offcanvas-title d-flex align-items-center gap-2 mb-0">
+      <i class="bi bi-clock-history"></i> Activity Log
+    </h5>
+    <div class="d-flex align-items-center gap-1">
+      <button type="button"
+              class="btn btn-sm btn-link text-secondary p-1 d-inline-flex align-items-center gap-1"
+              title="Clear"
+              (click)="clear()">
+        <i class="bi bi-trash"></i>
+        <span class="small">Clear</span>
+      </button>
+      <button type="button" class="btn-close" aria-label="Close" (click)="close()"></button>
+    </div>
+  </div>
+  <div id="log-entries" class="offcanvas-body p-2">
+    <div class="log-empty">No activity yet</div>
+  </div>
+</div>

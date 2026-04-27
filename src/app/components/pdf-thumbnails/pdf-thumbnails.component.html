@@ -1,0 +1,32 @@
+@if (open() && thumbs().length > 0) {
+  <aside class="pdf-thumbs-panel d-flex flex-column bg-body-secondary border-end flex-shrink-0">
+    <div class="d-flex align-items-center justify-content-between px-3 border-bottom flex-shrink-0"
+         style="height: 2.75rem;">
+      <span class="fw-semibold small d-flex align-items-center gap-2">
+        <i class="bi bi-images"></i> Pages
+      </span>
+      <span class="badge text-bg-secondary border fw-normal" style="font-size: .65rem;">
+        {{ thumbs().length }}
+      </span>
+    </div>
+    <div #list class="pdf-thumbs-list flex-grow-1 overflow-auto p-2">
+      @for (t of thumbs(); track t.pageIndex) {
+        <button type="button"
+                class="pdf-thumb btn p-1 mb-2 d-flex flex-column align-items-center w-100 border"
+                [class.active]="activePageIndex() === t.pageIndex"
+                [attr.data-page-index]="t.pageIndex"
+                [title]="'Page ' + (t.pageIndex + 1)"
+                (click)="scrollToPage(t.pageIndex)">
+          <div class="thumb-canvas-host d-flex align-items-center justify-content-center">
+            @if (!t.rendered) {
+              <div class="thumb-placeholder bg-tertiary"></div>
+            }
+          </div>
+          <small class="text-secondary mt-1" style="font-size: .65rem;">
+            {{ t.pageIndex + 1 }}
+          </small>
+        </button>
+      }
+    </div>
+  </aside>
+}

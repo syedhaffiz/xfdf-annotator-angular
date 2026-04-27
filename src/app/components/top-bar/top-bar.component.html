@@ -1,0 +1,165 @@
+<nav class="navbar navbar-expand bg-body-secondary border-bottom px-3 py-2 flex-shrink-0">
+  <!-- Doc title + thumbnails toggle -->
+  <div class="d-flex align-items-center gap-2 me-3">
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary border"
+      title="Toggle page thumbnails"
+      [class.active]="thumbsOpen()"
+      [disabled]="!annotator.hasDocument() || annotator.pageCount() === 0"
+      (click)="thumbsToggle.emit()"
+    >
+      <i class="bi bi-layout-sidebar"></i>
+    </button>
+    <div class="d-flex flex-column lh-sm">
+      <span id="doc-title" class="fw-semibold small">No document loaded</span>
+      <span id="doc-meta" class="text-secondary" style="font-size: 0.7rem"></span>
+    </div>
+  </div>
+
+  <!-- Centered view tabs (not floating — live in the header row) -->
+  <ul
+    class="nav nav-pills bg-body border rounded-pill shadow-sm p-1 small flex-nowrap mx-auto"
+    role="tablist"
+  >
+    <li class="nav-item">
+      <button
+        type="button"
+        class="nav-link rounded-pill px-3 py-1 d-flex align-items-center gap-1"
+        [class.active]="toolsTabActive()"
+        role="tab"
+        [attr.aria-selected]="toolsTabActive()"
+        (click)="toolsTabClick.emit()"
+      >
+        <i class="bi bi-palette2"></i>
+        <span>Annotate</span>
+      </button>
+    </li>
+    <li class="nav-item">
+      <button
+        type="button"
+        class="nav-link rounded-pill px-3 py-1 d-flex align-items-center gap-1"
+        [class.active]="assetsTabActive()"
+        (click)="assetsTabClick.emit()"
+      >
+        <i class="bi bi-collection"></i>
+        <span>Assets</span>
+      </button>
+    </li>
+    <li class="nav-item">
+      <button
+        type="button"
+        class="nav-link rounded-pill px-3 py-1 d-flex align-items-center gap-1"
+        [class.active]="logTabActive()"
+        (click)="logTabClick.emit()"
+      >
+        <i class="bi bi-clock-history"></i>
+        <span>Activity Log</span>
+      </button>
+    </li>
+  </ul>
+
+  <!-- Right cluster: mode, file actions, theme, user-id -->
+  <div class="d-flex align-items-center gap-2">
+    <div class="btn-group btn-group-sm" role="group" aria-label="Mode">
+      <input
+        type="radio"
+        class="btn-check"
+        id="mode-edit"
+        name="mode-toggle"
+        [checked]="annotator.mode() === 'edit'"
+        (change)="setMode('edit')"
+      />
+      <label class="btn btn-outline-secondary border" for="mode-edit" title="Edit mode">
+        <i class="bi bi-pencil-square"></i>
+      </label>
+      <input
+        type="radio"
+        class="btn-check"
+        id="mode-view"
+        name="mode-toggle"
+        [checked]="annotator.mode() === 'view'"
+        (change)="setMode('view')"
+      />
+      <label class="btn btn-outline-secondary border" for="mode-view" title="View mode">
+        <i class="bi bi-eye"></i>
+      </label>
+    </div>
+
+    <!-- Zoom controls -->
+    <div class="btn-group btn-group-sm" role="group" aria-label="Zoom">
+      <button
+        type="button"
+        class="btn btn-outline-secondary border"
+        title="Zoom out"
+        [disabled]="!annotator.hasDocument()"
+        (click)="annotator.zoomOut()"
+      >
+        <i class="bi bi-zoom-out"></i>
+      </button>
+      <button
+        type="button"
+        class="btn btn-outline-secondary border font-monospace"
+        title="Reset to fit"
+        style="min-width: 3.25rem"
+        [disabled]="!annotator.hasDocument()"
+        (click)="annotator.fitToPage()"
+      >
+        {{ annotator.zoomLevel() * 100 | number: '1.0-0' }}%
+      </button>
+      <button
+        type="button"
+        class="btn btn-outline-secondary border"
+        title="Zoom in"
+        [disabled]="!annotator.hasDocument()"
+        (click)="annotator.zoomIn()"
+      >
+        <i class="bi bi-zoom-in"></i>
+      </button>
+    </div>
+
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary border"
+      title="Open file"
+      [attr.aria-expanded]="openMenuOpen()"
+      (click)="openMenuToggle.emit($event)"
+    >
+      <i class="bi bi-folder2-open me-1"></i> Open
+    </button>
+
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary border"
+      title="Save XFDF"
+      [disabled]="!annotator.hasDocument()"
+      (click)="saveClick.emit()"
+    >
+      <i class="bi bi-save me-1"></i> Save
+    </button>
+
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary border"
+      title="Load XFDF"
+      (click)="loadXfdfClick.emit()"
+    >
+      <i class="bi bi-upload me-1"></i> Load
+    </button>
+
+    <span class="vr mx-1"></span>
+
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-secondary border"
+      [title]="theme.theme() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+      (click)="theme.toggle()"
+    >
+      <i
+        class="bi"
+        [class.bi-sun-fill]="theme.theme() === 'dark'"
+        [class.bi-moon-stars-fill]="theme.theme() === 'light'"
+      ></i>
+    </button>
+  </div>
+</nav>

@@ -1,0 +1,37 @@
+<div id="toolbar-panel"
+     class="bg-body border rounded-pill shadow-sm p-1 d-inline-flex align-items-center gap-1 flex-wrap justify-content-center"
+     [class.view-mode]="annotator.mode() === 'view'"
+     style="max-width: 90vw;">
+
+  @for (t of tools(); track t.tool) {
+    <button type="button"
+            class="btn btn-sm tool-btn rounded-circle border-0 d-inline-flex align-items-center justify-content-center"
+            [class.btn-primary]="annotator.tool() === t.tool"
+            [class.btn-light]="annotator.tool() !== t.tool"
+            [title]="t.title"
+            (click)="setTool(t.tool)">
+      <i class="bi" [class]="'bi ' + t.icon"></i>
+    </button>
+  }
+
+  <span class="vr mx-1"></span>
+
+  <input type="color"
+         class="form-control form-control-color form-control-sm border-0 p-0 rounded-circle"
+         style="width: 1.85rem; height: 1.85rem;"
+         [value]="annotator.color()"
+         (input)="onColorChange($event)"
+         title="Stroke colour" />
+
+  <div class="d-flex align-items-center gap-2 px-2" title="Brush size">
+    <i class="bi bi-brush text-secondary small"></i>
+    <input type="range" min="1" max="20"
+           class="form-range"
+           style="width: 5rem;"
+           [value]="annotator.strokeWidth()"
+           (input)="onStrokeWidthChange($event)" />
+    <small class="text-secondary fw-medium" style="font-size: .7rem; min-width: 1.75rem;">
+      {{ annotator.strokeWidth() }}px
+    </small>
+  </div>
+</div>

@@ -50,4 +50,7 @@ export class AnnotationToolbarComponent {
     const v = Number((ev.target as HTMLInputElement).value);
     if (Number.isFinite(v)) this.annotator.setStrokeWidth(v);
   }
+
+  undo(): void { this.annotator.undo(); }
+  redo(): void { this.annotator.redo(); }
 }

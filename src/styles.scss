@@ -152,8 +152,43 @@ html, body { height: 100%; }
   width: 2rem; height: 2rem;
   display: inline-flex; align-items: center; justify-content: center;
   padding: 0;
+  flex-shrink: 0;          // never collapse a tool button
 }
 .tool-btn .bi { font-size: 1rem; line-height: 1; }
+
+// ─────────────────────────────────────────────────────────────────────
+//  Floating annotation toolbar — responsive sizing
+// ─────────────────────────────────────────────────────────────────────
+.annotation-toolbar-host {
+  // Stay inside the viewport. If the toolbar is genuinely wider than
+  // the viewport (very narrow browsers) it scrolls horizontally inside
+  // the pill instead of wrapping or being clipped.
+  max-width: calc(100vw - 1.5rem);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;          // hide the scrollbar — drag/swipe still works
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar { display: none; }
+}
+#toolbar-panel { white-space: nowrap; }
+#toolbar-panel .vr { flex-shrink: 0; }
+#toolbar-panel .form-control-color { flex-shrink: 0; }
+
+.brush-range {
+  width: 5rem;
+}
+
+// Below 992px (≈ Bootstrap lg), tighten the brush control:
+//  drop the px label, shrink the slider, but keep all icons visible.
+@media (max-width: 991.98px) {
+  .brush-range { width: 3.5rem; }
+  .brush-px    { display: none; }
+}
+@media (max-width: 575.98px) {
+  .brush-control { padding-left: .25rem !important; padding-right: .25rem !important; }
+  .brush-range   { width: 2.75rem; }
+  #toolbar-panel { gap: .15rem !important; }
+}
 
 // Brush-size range — Bootstrap's default track blends into the pill in dark
 // mode. Force a visibly lighter track + slightly larger thumb.
@@ -180,6 +215,8 @@ html, body { height: 100%; }
 }
 .log-entry.action-added   { border-left-color: var(--bs-success); }
 .log-entry.action-removed { border-left-color: var(--bs-danger); }
+.log-entry.action-undo,
+.log-entry.action-redo    { border-left-color: var(--bs-info); }
 .log-entry-header {
   display: flex; justify-content: space-between; margin-bottom: .25rem;
 }
@@ -190,6 +227,8 @@ html, body { height: 100%; }
 }
 .log-badge.added   { background: rgba(78, 201, 163, .15); color: var(--bs-success); }
 .log-badge.removed { background: rgba(227, 77, 101, .15); color: var(--bs-danger); }
+.log-badge.undo,
+.log-badge.redo    { background: rgba(77, 171, 247, .15); color: var(--bs-info); }
 .log-time   { color: var(--bs-secondary-color); font-size: .6875rem; }
 .log-detail { display: flex; gap: .5rem; color: var(--bs-secondary-color); }
 .log-tool-name { font-weight: 600; color: var(--bs-body-color); }

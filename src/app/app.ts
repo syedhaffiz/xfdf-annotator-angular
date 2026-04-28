@@ -393,6 +393,21 @@ export class App implements AfterViewInit, OnDestroy {
   onKeydown(ev: KeyboardEvent): void {
     const t = ev.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+    // Ctrl/Cmd+Z = undo · Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo
+    const ctrl = ev.ctrlKey || ev.metaKey;
+    if (ctrl && ev.key.toLowerCase() === 'z') {
+      ev.preventDefault();
+      if (ev.shiftKey) this.annotator.redo();
+      else this.annotator.undo();
+      return;
+    }
+    if (ctrl && ev.key.toLowerCase() === 'y') {
+      ev.preventDefault();
+      this.annotator.redo();
+      return;
+    }
+
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
 
     const def = this.tools.find((x) => x.key === ev.key.toLowerCase());

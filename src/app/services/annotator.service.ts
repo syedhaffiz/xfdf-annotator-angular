@@ -16,6 +16,14 @@ interface FabricCanvas {
   off?: (event: string, handler: (e: { target?: FabricObject }) => void) => void;
   renderAll: () => void;
 }
+/** Object stored on a fabric canvas — the library tags real annotations with an objectId. */
+interface HookableObject extends FabricObject { objectId?: string; }
+/** Per-page entry in the library's private `_canvas._pages[]`. */
+interface HookablePage {
+  fc?: FabricCanvas;
+  /** Sentinel we set so we don't double-bind history listeners. */
+  _historyHooked?: boolean;
+}
 
 // xfdf-annotator's PDFRenderer falls back to a CDN URL that doesn't always
 // resolve (cdnjs hadn't published the matching pdf.js version at the time
@@ -138,6 +146,16 @@ export class AnnotatorService {
   static readonly ZOOM_MAX = 4.0;
   static readonly ZOOM_STEP = 1.25;
 
+  /** Undo / redo availability — drives toolbar button disabled state. */
+  readonly canUndo = signal<boolean>(false);
+  readonly canRedo = signal<boolean>(false);
+
+  /** Stack of XFDF snapshots; `_historyIndex` is the index of the current state. */
+  private _historyStack:    string[] = [];
+  private _historyIndex                = -1;
+  private _suppressHistory             = false;
+  private static readonly HISTORY_MAX  = 50;
+
   /** Must be called after the DOM has rendered (ngAfterViewInit). */
   init(): DocumentAnnotator {
     if (this._annotator) return this._annotator;
@@ -178,6 +196,7 @@ export class AnnotatorService {
       this._setPdfDoc(null);
     }
     this._setupZoom();
+    this._initHistory();
   }
 
   async loadURL(url: string, type: 'pdf' | 'image', label?: string): Promise<void> {
@@ -194,6 +213,7 @@ export class AnnotatorService {
       this._setPdfDoc(null);
     }
     this._setupZoom();
+    this._initHistory();
   }
 
   private async _loadPdfDoc(src: ArrayBuffer | string): Promise<void> {
@@ -352,7 +372,133 @@ export class AnnotatorService {
   }
 
   async restoreXFDF(xml: string): Promise<void> {
-    await this.a.restore(xml);
+    this._suppressHistory = true;
+    try {
+      await this.a.restore(xml);
+      this._hookFabricForHistory();
+    } finally {
+      this._suppressHistory = false;
+    }
+    // Reset history with the restored state as the new baseline.
+    this._historyStack = [];
+    this._historyIndex = -1;
+    this._snapshot();
+  }
+
+  // ── Undo / redo ──────────────────────────────────────────────────
+
+  async undo(): Promise<void> {
+    if (!this.canUndo()) return;
+    this._suppressHistory = true;
+    try {
+      this._historyIndex--;
+      await this.a.restore(this._historyStack[this._historyIndex]);
+      this._hookFabricForHistory();
+    } finally {
+      this._suppressHistory = false;
+      this._updateHistorySignals();
+    }
+    this._logCustomEntry('undo', 'Undo');
+  }
+
+  async redo(): Promise<void> {
+    if (!this.canRedo()) return;
+    this._suppressHistory = true;
+    try {
+      this._historyIndex++;
+      await this.a.restore(this._historyStack[this._historyIndex]);
+      this._hookFabricForHistory();
+    } finally {
+      this._suppressHistory = false;
+      this._updateHistorySignals();
+    }
+    this._logCustomEntry('redo', 'Redo');
+  }
+
+  /**
+   * Reset history after a fresh load and capture the empty initial state
+   * as snapshot 0 (so the first edit produces snapshot 1, undoable to 0).
+   */
+  private _initHistory(): void {
+    this._historyStack = [];
+    this._historyIndex = -1;
+    this._hookFabricForHistory();
+    this._snapshot();
+    this._updateHistorySignals();
+  }
+
+  /**
+   * Attach `object:added/removed/modified` listeners on every per-page
+   * fabric canvas. Idempotent — flags hooked pages so we don't double-bind
+   * when called again after a load/restore (which rebuilds the canvases).
+   */
+  private _hookFabricForHistory(): void {
+    const internal = this._annotator as unknown as {
+      _canvas?: { _pages?: Array<HookablePage | undefined> };
+    };
+    const pages = internal._canvas?._pages;
+    if (!pages) return;
+
+    for (const p of pages) {
+      if (!p?.fc || p._historyHooked) continue;
+      p._historyHooked = true;
+
+      const handler = (e?: { target?: HookableObject }) => {
+        const obj = e?.target;
+        // Filter out polygon helpers / rubberbands etc. — only "real"
+        // annotations get an objectId via `_attachMeta`.
+        if (!obj || !obj.objectId) return;
+        this._snapshot();
+      };
+      p.fc.on?.('object:added',    handler);
+      p.fc.on?.('object:removed',  handler);
+      p.fc.on?.('object:modified', handler);
+    }
+  }
+
+  /** Capture the current document as XFDF and push it onto the history stack. */
+  private _snapshot(): void {
+    if (this._suppressHistory || !this._annotator) return;
+    let xml: string;
+    try { xml = this.a.save(); }
+    catch { return; }
+
+    // Truncate any redo branch — a new edit invalidates the redo future.
+    this._historyStack = this._historyStack.slice(0, this._historyIndex + 1);
+    this._historyStack.push(xml);
+
+    // Cap memory.
+    if (this._historyStack.length > AnnotatorService.HISTORY_MAX) {
+      this._historyStack = this._historyStack.slice(-AnnotatorService.HISTORY_MAX);
+    }
+    this._historyIndex = this._historyStack.length - 1;
+    this._updateHistorySignals();
+  }
+
+  private _updateHistorySignals(): void {
+    this.canUndo.set(this._historyIndex > 0);
+    this.canRedo.set(this._historyIndex < this._historyStack.length - 1);
+  }
+
+  /**
+   * Push a synthetic entry onto the library's activity log — used so
+   * undo/redo show up in the same activity feed as draws and erases.
+   */
+  private _logCustomEntry(kind: 'undo' | 'redo', description: string): void {
+    const internal = this._annotator as unknown as {
+      _log?: { addEvent?: (e: Record<string, unknown>) => void };
+    };
+    internal._log?.addEvent?.({
+      id:          (typeof crypto !== 'undefined' && crypto.randomUUID)
+                     ? crypto.randomUUID()
+                     : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      description,
+      action:      kind,           // custom badge class — no preset colour
+      tool:        kind,           // shows as "Undo" / "Redo" via fallback
+      pageIndex:   0,
+      userId:      this.userId(),
+      timestamp:   Date.now(),
+    });
   }
 
   // ── Zoom ─────────────────────────────────────────────────────────
@@ -485,5 +631,8 @@ export class AnnotatorService {
       this.hasDocument.set(false);
     }
     this._setPdfDoc(null);
+    this._historyStack = [];
+    this._historyIndex = -1;
+    this._updateHistorySignals();
   }
 }

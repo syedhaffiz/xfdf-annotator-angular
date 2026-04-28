@@ -1,7 +1,6 @@
 <div id="toolbar-panel"
-     class="bg-body border rounded-pill shadow-sm p-1 d-inline-flex align-items-center gap-1 flex-wrap justify-content-center"
-     [class.view-mode]="annotator.mode() === 'view'"
-     style="max-width: 90vw;">
+     class="bg-body border rounded-pill shadow-sm p-1 d-inline-flex align-items-center gap-1 flex-nowrap justify-content-start"
+     [class.view-mode]="annotator.mode() === 'view'">
 
   @for (t of tools(); track t.tool) {
     <button type="button"
@@ -23,15 +22,32 @@
          (input)="onColorChange($event)"
          title="Stroke colour" />
 
-  <div class="d-flex align-items-center gap-2 px-2" title="Brush size">
-    <i class="bi bi-brush text-secondary small"></i>
+  <div class="brush-control d-flex align-items-center gap-2 px-2" title="Brush size">
+    <i class="bi bi-brush text-secondary small flex-shrink-0"></i>
     <input type="range" min="1" max="20"
-           class="form-range"
-           style="width: 5rem;"
+           class="form-range brush-range flex-shrink-0"
            [value]="annotator.strokeWidth()"
            (input)="onStrokeWidthChange($event)" />
-    <small class="text-secondary fw-medium" style="font-size: .7rem; min-width: 1.75rem;">
+    <small class="brush-px text-secondary fw-medium flex-shrink-0"
+           style="font-size: .7rem; min-width: 1.75rem;">
       {{ annotator.strokeWidth() }}px
     </small>
   </div>
+
+  <span class="vr mx-1"></span>
+
+  <button type="button"
+          class="btn btn-sm btn-light tool-btn rounded-circle border-0 d-inline-flex align-items-center justify-content-center"
+          title="Undo (Ctrl+Z)"
+          [disabled]="!annotator.canUndo()"
+          (click)="undo()">
+    <i class="bi bi-arrow-counterclockwise"></i>
+  </button>
+  <button type="button"
+          class="btn btn-sm btn-light tool-btn rounded-circle border-0 d-inline-flex align-items-center justify-content-center"
+          title="Redo (Ctrl+Shift+Z)"
+          [disabled]="!annotator.canRedo()"
+          (click)="redo()">
+    <i class="bi bi-arrow-clockwise"></i>
+  </button>
 </div>

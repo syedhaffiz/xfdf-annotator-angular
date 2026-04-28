@@ -13,8 +13,12 @@ jobs:
           node-version: latest
       - name: Install dependencies
         run: npm install
-      - name: Build and Deploy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Build
         run: |
-          npx ng deploy --base-href=/xfdf-annotator-angular/ --name="Syed Haffiz" --email="haffizsyed@gmail.com"
+          npm run build -- --base-href=/xfdf-annotator-angular/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist/xfdf-annotator-angular

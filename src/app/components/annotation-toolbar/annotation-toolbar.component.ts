@@ -51,6 +51,15 @@ export class AnnotationToolbarComponent {
     if (Number.isFinite(v)) this.annotator.setStrokeWidth(v);
   }
 
+  onFillColorChange(ev: Event): void {
+    this.annotator.setFillColor((ev.target as HTMLInputElement).value);
+  }
+
+  onFillOpacityChange(ev: Event): void {
+    const v = Number((ev.target as HTMLInputElement).value);
+    if (Number.isFinite(v)) this.annotator.setFillOpacity(v);
+  }
+
   undo(): void { this.annotator.undo(); }
   redo(): void { this.annotator.redo(); }
 }

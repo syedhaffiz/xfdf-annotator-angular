@@ -12,12 +12,13 @@ interface FabricObject {
 }
 interface FabricCanvas {
   getZoom?: () => number;
+  getObjects?: () => HookableObject[];
   on?: (event: string, handler: (e: { target?: FabricObject }) => void) => void;
   off?: (event: string, handler: (e: { target?: FabricObject }) => void) => void;
   renderAll: () => void;
 }
 /** Object stored on a fabric canvas — the library tags real annotations with an objectId. */
-interface HookableObject extends FabricObject { objectId?: string; }
+interface HookableObject extends FabricObject { objectId?: string; fill?: string; }
 /** Per-page entry in the library's private `_canvas._pages[]`. */
 interface HookablePage {
   fc?: FabricCanvas;
@@ -146,6 +147,11 @@ export class AnnotatorService {
   static readonly ZOOM_MAX = 4.0;
   static readonly ZOOM_STEP = 1.25;
 
+  /** Fill colour applied to newly-drawn fillable shapes (hex, e.g. '#4a90e2'). */
+  readonly fillColor = signal<string>('#4a90e2');
+  /** Fill opacity for newly-drawn shapes — 0 = transparent, 100 = fully opaque. */
+  readonly fillOpacity = signal<number>(0);
+
   /** Undo / redo availability — drives toolbar button disabled state. */
   readonly canUndo = signal<boolean>(false);
   readonly canRedo = signal<boolean>(false);
@@ -266,6 +272,34 @@ export class AnnotatorService {
     this.a.setStrokeWidth(width);
   }
 
+  setFillColor(color: string): void {
+    this.fillColor.set(color);
+  }
+
+  setFillOpacity(opacity: number): void {
+    this.fillOpacity.set(Math.max(0, Math.min(100, Math.round(opacity))));
+  }
+
+  /**
+   * Compute the CSS fill value from the current fillColor + fillOpacity.
+   * Returns `'transparent'` when opacity is 0.
+   */
+  private _computeFill(): string {
+    const pct = this.fillOpacity();
+    if (pct <= 0) return 'transparent';
+    const hex = this.fillColor();
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    if (isNaN(r) || isNaN(g) || isNaN(b)) return 'transparent';
+    return `rgba(${r},${g},${b},${pct / 100})`;
+  }
+
+  /** Fabric object types that should receive a fill (rect, ellipse, polygon, etc.). */
+  private static readonly FILLABLE_SHAPE_TYPES = new Set([
+    'rect', 'ellipse', 'circle', 'polygon', 'triangle',
+  ]);
+
   insertImage(file: File): void {
     this.a.insertImage(file);
   }
@@ -368,14 +402,17 @@ export class AnnotatorService {
   // ── XFDF I/O ──────────────────────────────────────────────────────
 
   saveXFDF(): string {
-    return this.a.save();
+    return this._saveWithFill();
   }
 
   async restoreXFDF(xml: string): Promise<void> {
+    const fills  = this._extractFills(xml);
+    const stripped = this._stripFillTag(xml);
     this._suppressHistory = true;
     try {
-      await this.a.restore(xml);
+      await this.a.restore(stripped);
       this._hookFabricForHistory();
+      this._applyRestoredFills(fills);
     } finally {
       this._suppressHistory = false;
     }
@@ -392,8 +429,10 @@ export class AnnotatorService {
     this._suppressHistory = true;
     try {
       this._historyIndex--;
-      await this.a.restore(this._historyStack[this._historyIndex]);
+      const snapshot = this._historyStack[this._historyIndex];
+      await this.a.restore(this._stripFillTag(snapshot));
       this._hookFabricForHistory();
+      this._applyRestoredFills(this._extractFills(snapshot));
     } finally {
       this._suppressHistory = false;
       this._updateHistorySignals();
@@ -406,8 +445,10 @@ export class AnnotatorService {
     this._suppressHistory = true;
     try {
       this._historyIndex++;
-      await this.a.restore(this._historyStack[this._historyIndex]);
+      const snapshot = this._historyStack[this._historyIndex];
+      await this.a.restore(this._stripFillTag(snapshot));
       this._hookFabricForHistory();
+      this._applyRestoredFills(this._extractFills(snapshot));
     } finally {
       this._suppressHistory = false;
       this._updateHistorySignals();
@@ -443,6 +484,9 @@ export class AnnotatorService {
       if (!p?.fc || p._historyHooked) continue;
       p._historyHooked = true;
 
+      // Capture fc so the closure has a non-optional reference.
+      const fc = p.fc;
+
       const handler = (e?: { target?: HookableObject }) => {
         const obj = e?.target;
         // Filter out polygon helpers / rubberbands etc. — only "real"
@@ -450,17 +494,31 @@ export class AnnotatorService {
         if (!obj || !obj.objectId) return;
         this._snapshot();
       };
+
+      // Apply fill to newly drawn shapes BEFORE the history snapshot fires.
+      const fillHandler = (e?: { target?: HookableObject }) => {
+        const obj = e?.target;
+        if (!obj || !obj.objectId) return;
+        const type = (obj.type ?? '').toLowerCase();
+        if (AnnotatorService.FILLABLE_SHAPE_TYPES.has(type)) {
+          obj.set({ fill: this._computeFill() });
+          obj.setCoords?.();
+          fc.renderAll();
+        }
+      };
+
+      fc.on?.('object:added',    fillHandler);
       p.fc.on?.('object:added',    handler);
       p.fc.on?.('object:removed',  handler);
       p.fc.on?.('object:modified', handler);
     }
   }
 
-  /** Capture the current document as XFDF and push it onto the history stack. */
+  /** Capture the current document as XFDF (with fill data) and push it onto the history stack. */
   private _snapshot(): void {
     if (this._suppressHistory || !this._annotator) return;
     let xml: string;
-    try { xml = this.a.save(); }
+    try { xml = this._saveWithFill(); }
     catch { return; }
 
     // Truncate any redo branch — a new edit invalidates the redo future.
@@ -478,6 +536,95 @@ export class AnnotatorService {
   private _updateHistorySignals(): void {
     this.canUndo.set(this._historyIndex > 0);
     this.canRedo.set(this._historyIndex < this._historyStack.length - 1);
+  }
+
+  // ── Fill serialisation helpers ────────────────────────────────────
+  //
+  // The XFDF format (and the underlying library) do not persist Fabric's
+  // `fill` property.  We work around this by:
+  //   • Injecting a <xfdf-annotator-fills data="<base64-json>"/> tag into
+  //     every XFDF snapshot we create (_saveWithFill / _snapshot / saveXFDF).
+  //   • Stripping that tag before passing XFDF to the library (restore/undo/redo).
+  //   • Re-applying the fills to the reconstructed Fabric objects afterwards.
+
+  /**
+   * Collect objectId → fill from every Fabric object on every page.
+   * Only records objects that actually have a non-transparent fill.
+   */
+  private _gatherFills(): Record<string, string> {
+    const result: Record<string, string> = {};
+    const internal = this._annotator as unknown as {
+      _canvas?: { _pages?: Array<HookablePage | undefined> };
+    };
+    const pages = internal._canvas?._pages;
+    if (!pages) return result;
+
+    for (const p of pages) {
+      const objs = p?.fc?.getObjects?.() ?? [];
+      for (const obj of objs) {
+        if (obj.objectId && obj.fill && obj.fill !== 'transparent' && obj.fill !== '') {
+          result[obj.objectId] = obj.fill;
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Serialize XFDF with fill metadata embedded as a custom self-closing tag
+   * just before </xfdf>.
+   */
+  private _saveWithFill(): string {
+    const xml   = this.a.save();
+    const fills = this._gatherFills();
+    if (Object.keys(fills).length === 0) return xml;
+
+    const encoded = btoa(JSON.stringify(fills));
+    const tag     = `<xfdf-annotator-fills data="${encoded}"/>`;
+    // Insert before </xfdf> if present, otherwise append.
+    return xml.includes('</xfdf>')
+      ? xml.replace('</xfdf>', `${tag}</xfdf>`)
+      : xml + tag;
+  }
+
+  /** Parse the embedded fill map from an XFDF string (returns {} if absent). */
+  private _extractFills(xml: string): Record<string, string> {
+    const m = /<xfdf-annotator-fills\s+data="([^"]+)"\s*\/?>/i.exec(xml);
+    if (!m) return {};
+    try { return JSON.parse(atob(m[1])) as Record<string, string>; }
+    catch { return {}; }
+  }
+
+  /** Remove the custom fill tag so the library never sees it. */
+  private _stripFillTag(xml: string): string {
+    return xml.replace(/<xfdf-annotator-fills\s+data="[^"]*"\s*\/?>\s*/gi, '');
+  }
+
+  /**
+   * After a restore(), iterate all Fabric objects and re-apply any fills
+   * that were recorded in the snapshot.
+   */
+  private _applyRestoredFills(fills: Record<string, string>): void {
+    if (Object.keys(fills).length === 0) return;
+    const internal = this._annotator as unknown as {
+      _canvas?: { _pages?: Array<HookablePage | undefined> };
+    };
+    const pages = internal._canvas?._pages;
+    if (!pages) return;
+
+    for (const p of pages) {
+      const fc   = p?.fc;
+      const objs = fc?.getObjects?.() ?? [];
+      let changed = false;
+      for (const obj of objs) {
+        if (obj.objectId && fills[obj.objectId]) {
+          obj.set({ fill: fills[obj.objectId] });
+          obj.setCoords?.();
+          changed = true;
+        }
+      }
+      if (changed) fc?.renderAll();
+    }
   }
 
   /**

@@ -178,15 +178,23 @@ html, body { height: 100%; }
   width: 5rem;
 }
 
-// Below 992px (≈ Bootstrap lg), tighten the brush control:
-//  drop the px label, shrink the slider, but keep all icons visible.
+.fill-range {
+  width: 4.5rem;
+}
+
+// Below 992px (≈ Bootstrap lg), tighten the brush and fill controls:
+//  drop the px/pct labels, shrink sliders, but keep all icons visible.
 @media (max-width: 991.98px) {
   .brush-range { width: 3.5rem; }
   .brush-px    { display: none; }
+  .fill-range  { width: 3rem; }
+  .fill-pct    { display: none; }
 }
 @media (max-width: 575.98px) {
   .brush-control { padding-left: .25rem !important; padding-right: .25rem !important; }
+  .fill-control  { padding-left: .25rem !important; padding-right: .25rem !important; }
   .brush-range   { width: 2.75rem; }
+  .fill-range    { width: 2.25rem; }
   #toolbar-panel { gap: .15rem !important; }
 }
 

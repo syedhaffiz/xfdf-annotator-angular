@@ -160,6 +160,15 @@ html, body { height: 100%; }
 //  Floating annotation toolbar — responsive sizing
 // ─────────────────────────────────────────────────────────────────────
 .annotation-toolbar-host {
+  // Centre horizontally with auto margins instead of `translate-middle-x`.
+  // Using `transform` would turn this wrapper into the containing block for
+  // `position: fixed` descendants (e.g. the line-type popup), which would
+  // mis-anchor the dropdown.
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: max-content;
+
   // Stay inside the viewport. If the toolbar is genuinely wider than
   // the viewport (very narrow browsers) it scrolls horizontally inside
   // the pill instead of wrapping or being clipped.
@@ -198,6 +207,45 @@ html, body { height: 100%; }
   #toolbar-panel { gap: .15rem !important; }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  Line-type selector — pill button in the toolbar + popup menu
+// ─────────────────────────────────────────────────────────────────────
+.line-type-btn {
+  height: 2rem;
+  border-radius: 1rem !important;     // matches the surrounding tool-btn rounding
+  color: var(--bs-body-color);
+  &.active {
+    background: var(--bs-tertiary-bg);
+  }
+  &[disabled] { opacity: .4; pointer-events: none; }
+}
+#toolbar-panel.view-mode .line-type-btn { opacity: .35; pointer-events: none; }
+
+.line-type-menu {
+  min-width: 14rem;
+  max-height: 70vh;
+  overflow-y: auto;
+
+  .dropdown-item {
+    color: var(--bs-body-color);
+    &:hover, &:focus {
+      background: var(--bs-tertiary-bg);
+    }
+    &.active {
+      background: rgba(112, 72, 232, .12);
+      color: var(--bs-body-color);
+    }
+  }
+  svg { color: var(--bs-body-color); }
+}
+
+// On very narrow screens, hide the caret and let the line-preview swatch
+// stand alone so the pill stays compact.
+@media (max-width: 575.98px) {
+  .line-type-btn .bi-caret-down-fill { display: none; }
+  .line-type-btn { padding-left: .35rem !important; padding-right: .35rem !important; }
+}
+
 // Brush-size range — Bootstrap's default track blends into the pill in dark
 // mode. Force a visibly lighter track + slightly larger thumb.
 .form-range {
@@ -207,6 +255,18 @@ html, body { height: 100%; }
 [data-bs-theme="dark"] .form-range {
   &::-webkit-slider-runnable-track { background: #4a4f5a; }
   &::-moz-range-track              { background: #4a4f5a; }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Top-bar user badge — shows the active user's displayName
+// ─────────────────────────────────────────────────────────────────────
+.user-badge {
+  background: var(--bs-tertiary-bg);
+  border-color: var(--bs-border-color) !important;
+  color: var(--bs-body-color);
+  font-size: .75rem;
+  line-height: 1;
+  i { font-size: .9rem; color: var(--bs-secondary-color); }
 }
 
 // ─────────────────────────────────────────────────────────────────────

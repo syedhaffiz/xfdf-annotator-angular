@@ -30,7 +30,7 @@
 
       <!-- Floating annotation toolbar (under the navbar tabs) -->
       @if (centerTab() === 'tools') {
-        <div class="annotation-toolbar-host position-absolute start-50 translate-middle-x mt-3"
+        <div class="annotation-toolbar-host position-absolute mt-3"
              style="top: 0; z-index: 60;"
              [class.view-mode]="annotator.mode() === 'view'">
           <app-annotation-toolbar [tools]="tools"></app-annotation-toolbar>

@@ -13,22 +13,44 @@ import { AnnotatorService } from './services/annotator.service';
 import { ThemeService } from './services/theme.service';
 
 import { TopBarComponent } from './components/top-bar/top-bar.component';
-import { AnnotationToolbarComponent, type ToolDef } from './components/annotation-toolbar/annotation-toolbar.component';
+import {
+  AnnotationToolbarComponent,
+  type ToolDef,
+} from './components/annotation-toolbar/annotation-toolbar.component';
 import { ActivityLogComponent } from './components/activity-log/activity-log.component';
 import { PdfThumbnailsComponent } from './components/pdf-thumbnails/pdf-thumbnails.component';
 import { AssetsPanelComponent } from './components/assets-panel/assets-panel.component';
 import { ASSET_DRAG_MIME, type Asset } from './asset_utils';
 
 type ToastKind = 'info' | 'success' | 'error';
-interface Toast { id: number; text: string; kind: ToastKind; }
+interface Toast {
+  id: number;
+  text: string;
+  kind: ToastKind;
+}
 
 type UrlMode = 'direct' | 'blob' | 'dataurl';
-interface UrlModalState { open: boolean; mode: UrlMode; }
+interface UrlModalState {
+  open: boolean;
+  mode: UrlMode;
+}
 
 const URL_MODE_LABELS: Record<UrlMode, { title: string; hint: string; submit: string }> = {
-  direct:  { title: 'Open file from URL',       hint: 'Enter a direct URL to a PDF or image file',         submit: 'Open URL' },
-  blob:    { title: 'Open from API (Blob)',     hint: 'Enter an API endpoint that returns a binary Blob',  submit: 'Fetch Blob' },
-  dataurl: { title: 'Open from API (Data URL)', hint: 'Enter an API endpoint that returns a data: URL',    submit: 'Fetch Data URL' },
+  direct: {
+    title: 'Open file from URL',
+    hint: 'Enter a direct URL to a PDF or image file',
+    submit: 'Open URL',
+  },
+  blob: {
+    title: 'Open from API (Blob)',
+    hint: 'Enter an API endpoint that returns a binary Blob',
+    submit: 'Fetch Blob',
+  },
+  dataurl: {
+    title: 'Open from API (Data URL)',
+    hint: 'Enter an API endpoint that returns a data: URL',
+    submit: 'Fetch Data URL',
+  },
 };
 
 @Component({
@@ -47,31 +69,31 @@ const URL_MODE_LABELS: Record<UrlMode, { title: string; hint: string; submit: st
 })
 export class App implements AfterViewInit, OnDestroy {
   readonly annotator = inject(AnnotatorService);
-  readonly theme     = inject(ThemeService);
+  readonly theme = inject(ThemeService);
 
   readonly tools: ToolDef[] = [
-    { tool: 'select',    title: 'Select (V)',      icon: 'bi-cursor',         key: 'v' },
-    { tool: 'freehand',  title: 'Freehand (P)',    icon: 'bi-pencil',         key: 'p' },
-    { tool: 'line',      title: 'Line (L)',        icon: 'bi-slash-lg',       key: 'l' },
-    { tool: 'arrow',     title: 'Arrow (A)',       icon: 'bi-arrow-up-right', key: 'a' },
-    { tool: 'rectangle', title: 'Rectangle (R)',   icon: 'bi-square',         key: 'r' },
-    { tool: 'circle',    title: 'Ellipse (C)',     icon: 'bi-circle',         key: 'c' },
-    { tool: 'polygon',   title: 'Polygon (G)',     icon: 'bi-pentagon',       key: 'g' },
-    { tool: 'text',      title: 'Text (T)',        icon: 'bi-fonts',          key: 't' },
-    { tool: 'comment',   title: 'Comment (M)',     icon: 'bi-chat-left-text', key: 'm' },
-    { tool: 'image',     title: 'Image stamp (I)', icon: 'bi-image',          key: 'i' },
-    { tool: 'eraser',    title: 'Eraser (E)',      icon: 'bi-eraser',         key: 'e' },
+    { tool: 'select', title: 'Select (V)', icon: 'bi-cursor', key: 'v' },
+    { tool: 'freehand', title: 'Freehand (P)', icon: 'bi-pencil', key: 'p' },
+    { tool: 'line', title: 'Line (L)', icon: 'bi-slash-lg', key: 'l' },
+    { tool: 'arrow', title: 'Arrow (A)', icon: 'bi-arrow-up-right', key: 'a' },
+    { tool: 'rectangle', title: 'Rectangle (R)', icon: 'bi-square', key: 'r' },
+    { tool: 'circle', title: 'Ellipse (C)', icon: 'bi-circle', key: 'c' },
+    { tool: 'polygon', title: 'Polygon (G)', icon: 'bi-pentagon', key: 'g' },
+    { tool: 'text', title: 'Text (T)', icon: 'bi-fonts', key: 't' },
+    { tool: 'comment', title: 'Comment (M)', icon: 'bi-chat-left-text', key: 'm' },
+    { tool: 'image', title: 'Image stamp (I)', icon: 'bi-image', key: 'i' },
+    { tool: 'eraser', title: 'Eraser (E)', icon: 'bi-eraser', key: 'e' },
   ];
 
   // ── Tab / sidebar state ───────────────────────────────────────────
   /** null = no annotate-toolbar shown. */
-  readonly centerTab   = signal<'tools' | null>('tools');
-  readonly logOpen     = signal<boolean>(false);
-  readonly assetsOpen  = signal<boolean>(false);
-  readonly thumbsOpen  = signal<boolean>(false);
+  readonly centerTab = signal<'tools' | null>('tools');
+  readonly logOpen = signal<boolean>(false);
+  readonly assetsOpen = signal<boolean>(false);
+  readonly thumbsOpen = signal<boolean>(false);
 
   /** Asset the user clicked in the AssetsPanel — placed on the next page click. */
-  readonly armedAsset  = signal<Asset | null>(null);
+  readonly armedAsset = signal<Asset | null>(null);
 
   // ── Toast queue (inlined — no separate service) ───────────────────
   readonly toasts = signal<Toast[]>([]);
@@ -80,7 +102,7 @@ export class App implements AfterViewInit, OnDestroy {
   // ── URL / API loaders ─────────────────────────────────────────────
   readonly urlModal = signal<UrlModalState>({ open: false, mode: 'direct' });
   readonly urlInput = signal<string>('');
-  readonly urlBusy  = signal<boolean>(false);
+  readonly urlBusy = signal<boolean>(false);
   readonly urlModeLabels = URL_MODE_LABELS;
 
   // ── Drag-and-drop ─────────────────────────────────────────────────
@@ -89,12 +111,15 @@ export class App implements AfterViewInit, OnDestroy {
 
   // ── Open-file dropdown (manual — Bootstrap JS isn't loaded) ───────
   readonly openMenuOpen = signal<boolean>(false);
-  readonly openMenuPos  = signal<{ left: number; top: number }>({ left: 0, top: 0 });
+  readonly openMenuPos = signal<{ left: number; top: number }>({ left: 0, top: 0 });
 
   // ── Lifecycle ─────────────────────────────────────────────────────
   ngAfterViewInit(): void {
     // DocumentAnnotator queries the DOM by ID — must run after view init.
-    this.annotator.init();
+    this.annotator.init({
+      id: 'haffizsyed@gmail.com',
+      displayName: 'Haffiz',
+    });
   }
 
   ngOnDestroy(): void {
@@ -105,12 +130,18 @@ export class App implements AfterViewInit, OnDestroy {
   toggleToolsTab(): void {
     this.centerTab.update((t) => (t === 'tools' ? null : 'tools'));
   }
-  toggleLog():    void { this.logOpen.update((v) => !v); }
-  closeLog():     void { this.logOpen.set(false); }
-  toggleAssets(): void { this.assetsOpen.update((v) => !v); }
-  closeAssets():  void {
+  toggleLog(): void {
+    this.logOpen.update((v) => !v);
+  }
+  closeLog(): void {
+    this.logOpen.set(false);
+  }
+  toggleAssets(): void {
+    this.assetsOpen.update((v) => !v);
+  }
+  closeAssets(): void {
     this.assetsOpen.set(false);
-    this.armedAsset.set(null);  // closing the panel cancels selection
+    this.armedAsset.set(null); // closing the panel cancels selection
   }
 
   // ── Asset click-to-place ──────────────────────────────────────────
@@ -152,7 +183,11 @@ export class App implements AfterViewInit, OnDestroy {
 
     try {
       await this.annotator.insertImageAt(
-        armed.dataUrl, armed.name, pageLayers, ev.clientX, ev.clientY,
+        armed.dataUrl,
+        armed.name,
+        pageLayers,
+        ev.clientX,
+        ev.clientY,
       );
       this._toast(`Placed ${armed.name}`, 'success');
     } catch (e) {
@@ -167,21 +202,27 @@ export class App implements AfterViewInit, OnDestroy {
       this._toast('Asset placement cancelled', 'info');
     }
   }
-  toggleThumbs(): void { this.thumbsOpen.update((v) => !v); }
+  toggleThumbs(): void {
+    this.thumbsOpen.update((v) => !v);
+  }
 
   // ── Mode / tool / save / load ─────────────────────────────────────
-  setMode(mode: AnnotationMode): void { this.annotator.setMode(mode); }
+  setMode(mode: AnnotationMode): void {
+    this.annotator.setMode(mode);
+  }
 
-  clearLog(): void { this.annotator.clearLog(); }
+  clearLog(): void {
+    this.annotator.clearLog();
+  }
 
   saveXFDF(): void {
     if (!this.annotator.hasDocument()) return;
     try {
-      const xml  = this.annotator.saveXFDF();
+      const xml = this.annotator.saveXFDF();
       const blob = new Blob([xml], { type: 'application/vnd.adobe.xfdf' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
       a.download = `annotations-${Date.now()}.xfdf`;
       document.body.appendChild(a);
       a.click();
@@ -196,7 +237,7 @@ export class App implements AfterViewInit, OnDestroy {
   // ── File pickers ──────────────────────────────────────────────────
   async onFileChosen(ev: Event): Promise<void> {
     const input = ev.target as HTMLInputElement;
-    const file  = input.files?.[0];
+    const file = input.files?.[0];
     input.value = '';
     if (!file) return;
     try {
@@ -211,7 +252,7 @@ export class App implements AfterViewInit, OnDestroy {
 
   onImageChosen(ev: Event): void {
     const input = ev.target as HTMLInputElement;
-    const file  = input.files?.[0];
+    const file = input.files?.[0];
     input.value = '';
     if (!file) return;
     try {
@@ -223,7 +264,7 @@ export class App implements AfterViewInit, OnDestroy {
 
   async onXfdfChosen(ev: Event): Promise<void> {
     const input = ev.target as HTMLInputElement;
-    const file  = input.files?.[0];
+    const file = input.files?.[0];
     input.value = '';
     if (!file) return;
     try {
@@ -257,7 +298,7 @@ export class App implements AfterViewInit, OnDestroy {
         const type = this._urlType(url);
         await this.annotator.loadURL(url, type, this._filenameFromUrl(url));
       } else if (mode === 'blob') {
-        const res  = await fetch(url);
+        const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
         await this.annotator.loadBlob(blob, this._filenameFromUrl(url));
@@ -267,7 +308,13 @@ export class App implements AfterViewInit, OnDestroy {
         const txt = (await res.text()).trim();
         const dataUrl = txt.startsWith('data:')
           ? txt
-          : (() => { try { return JSON.parse(txt).dataUrl as string; } catch { return txt; } })();
+          : (() => {
+              try {
+                return JSON.parse(txt).dataUrl as string;
+              } catch {
+                return txt;
+              }
+            })();
         if (!dataUrl?.startsWith('data:')) throw new Error('Response is not a data: URL');
         await this.annotator.loadDataURL(dataUrl, this._filenameFromUrl(url));
       }
@@ -320,7 +367,7 @@ export class App implements AfterViewInit, OnDestroy {
         return;
       }
       const dataUrl = ev.dataTransfer?.getData(ASSET_DRAG_MIME);
-      const name    = ev.dataTransfer?.getData('text/plain') || 'asset';
+      const name = ev.dataTransfer?.getData('text/plain') || 'asset';
       if (!dataUrl) return;
 
       // Drop target's enclosing page — required for click-point placement.
@@ -332,14 +379,12 @@ export class App implements AfterViewInit, OnDestroy {
       }
 
       try {
-        await this.annotator.insertImageAt(
-          dataUrl, name, pageLayers, ev.clientX, ev.clientY,
-        );
+        await this.annotator.insertImageAt(dataUrl, name, pageLayers, ev.clientX, ev.clientY);
         this._toast(`Placed ${name}`, 'success');
       } catch (e) {
         this._toast(`Failed to place asset: ${this._msg(e)}`, 'error');
       }
-      this.armedAsset.set(null);  // disarm after a successful drop too
+      this.armedAsset.set(null); // disarm after a successful drop too
       return;
     }
 
@@ -375,7 +420,9 @@ export class App implements AfterViewInit, OnDestroy {
     }
     this.openMenuOpen.update((v) => !v);
   }
-  closeOpenMenu(): void { this.openMenuOpen.set(false); }
+  closeOpenMenu(): void {
+    this.openMenuOpen.set(false);
+  }
 
   @HostListener('document:click')
   onDocumentClick(): void {
@@ -449,7 +496,9 @@ export class App implements AfterViewInit, OnDestroy {
     try {
       const path = new URL(url, window.location.href).pathname.toLowerCase();
       if (path.endsWith('.pdf')) return 'pdf';
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
     return /\.pdf(\?|#|$)/i.test(url) ? 'pdf' : 'image';
   }
 
@@ -458,7 +507,9 @@ export class App implements AfterViewInit, OnDestroy {
       const path = new URL(url, window.location.href).pathname;
       const last = path.split('/').filter(Boolean).pop();
       if (last) return decodeURIComponent(last);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return 'document';
   }
 }

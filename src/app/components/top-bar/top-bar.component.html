@@ -161,5 +161,17 @@
         [class.bi-moon-stars-fill]="theme.theme() === 'light'"
       ></i>
     </button>
+
+    <!-- Current user badge — shows the human-readable display name. The
+         underlying user id is exposed via the title tooltip for support. -->
+    @if (annotator.user(); as u) {
+      <span
+        class="user-badge d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill border"
+        [title]="'User ID: ' + u.id"
+      >
+        <i class="bi bi-person-circle"></i>
+        <span class="small fw-medium text-truncate" style="max-width: 8rem;">{{ u.displayName }}</span>
+      </span>
+    }
   </div>
 </nav>

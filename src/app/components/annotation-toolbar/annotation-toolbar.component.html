@@ -34,6 +34,26 @@
     </small>
   </div>
 
+  <!-- Line type selector -->
+  <button type="button"
+          class="btn btn-sm btn-light line-type-btn d-inline-flex align-items-center gap-1 flex-shrink-0 border-0 px-2"
+          [class.active]="lineMenuOpen()"
+          [disabled]="annotator.mode() === 'view'"
+          title="Line type"
+          (click)="toggleLineMenu($event)">
+    <svg width="34" height="10" viewBox="0 0 34 10" class="flex-shrink-0">
+      @if (currentPattern().lineStyle === 'arc') {
+        <path d="M 1 7 A 4 4 0 0 1 9 7 A 4 4 0 0 1 17 7 A 4 4 0 0 1 25 7 A 4 4 0 0 1 33 7"
+              stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" />
+      } @else {
+        <line x1="1" y1="5" x2="33" y2="5"
+              stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+              [attr.stroke-dasharray]="dashAttr(currentPattern().dashArray)" />
+      }
+    </svg>
+    <i class="bi bi-caret-down-fill" style="font-size: .55rem;"></i>
+  </button>
+
   <span class="vr mx-1"></span>
 
   <!-- Fill colour -->
@@ -80,3 +100,39 @@
     <i class="bi bi-arrow-clockwise"></i>
   </button>
 </div>
+
+<!-- Line-type popup — fixed positioning so it isn't clipped by the
+     toolbar's overflow-x: auto wrapper. -->
+@if (lineMenuOpen()) {
+  <ul class="dropdown-menu show shadow-sm line-type-menu p-1"
+      role="menu"
+      [style.position]="'fixed'"
+      [style.left.px]="lineMenuPos().left"
+      [style.top.px]="lineMenuPos().top"
+      [style.z-index]="1080"
+      (click)="$event.stopPropagation()">
+    @for (p of patterns; track p.id) {
+      <li>
+        <button type="button"
+                class="dropdown-item d-flex align-items-center gap-3 py-1 px-2 rounded"
+                [class.active]="isCurrentPattern(p)"
+                (click)="selectPattern(p)">
+          <svg width="96" height="12" viewBox="0 0 96 12" class="flex-shrink-0">
+            @if (p.lineStyle === 'arc') {
+              <path d="M 1 9 A 5 5 0 0 1 11 9 A 5 5 0 0 1 21 9 A 5 5 0 0 1 31 9 A 5 5 0 0 1 41 9 A 5 5 0 0 1 51 9 A 5 5 0 0 1 61 9 A 5 5 0 0 1 71 9 A 5 5 0 0 1 81 9 A 5 5 0 0 1 91 9 L 95 9"
+                    stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" />
+            } @else {
+              <line x1="1" y1="6" x2="95" y2="6"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                    [attr.stroke-dasharray]="dashAttr(p.dashArray)" />
+            }
+          </svg>
+          <span class="small flex-grow-1 text-start">{{ p.label }}</span>
+          @if (isCurrentPattern(p)) {
+            <i class="bi bi-check2 text-primary"></i>
+          }
+        </button>
+      </li>
+    }
+  </ul>
+}

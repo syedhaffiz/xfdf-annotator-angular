@@ -1,30 +1,13 @@
 import { Injectable, computed, signal } from '@angular/core';
-import { DocumentAnnotator, type AnnotationTool, type AnnotationMode } from 'xfdf-annotator';
+import {
+  DocumentAnnotator,
+  type AnnotationTool,
+  type AnnotationMode,
+  type LineStyle,
+  type User,
+} from 'xfdf-annotator';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-
-// Minimal structural types — we only access fabric via the library's
-// (otherwise-private) internals, so we avoid a direct fabric import.
-interface FabricObject {
-  type?: string;
-  set: (props: Record<string, unknown>) => unknown;
-  setCoords?: () => void;
-}
-interface FabricCanvas {
-  getZoom?: () => number;
-  getObjects?: () => HookableObject[];
-  on?: (event: string, handler: (e: { target?: FabricObject }) => void) => void;
-  off?: (event: string, handler: (e: { target?: FabricObject }) => void) => void;
-  renderAll: () => void;
-}
-/** Object stored on a fabric canvas — the library tags real annotations with an objectId. */
-interface HookableObject extends FabricObject { objectId?: string; fill?: string; }
-/** Per-page entry in the library's private `_canvas._pages[]`. */
-interface HookablePage {
-  fc?: FabricCanvas;
-  /** Sentinel we set so we don't double-bind history listeners. */
-  _historyHooked?: boolean;
-}
 
 // xfdf-annotator's PDFRenderer falls back to a CDN URL that doesn't always
 // resolve (cdnjs hadn't published the matching pdf.js version at the time
@@ -112,65 +95,80 @@ function dataURLToFile(dataUrl: string, filename: string): File | null {
 }
 
 /**
- * Wraps a single DocumentAnnotator instance and exposes its mutable bits as
- * Angular signals so templates can react to mode/tool changes.
+ * Reactive Angular shim around `DocumentAnnotator`.
  *
- * The underlying DocumentAnnotator manipulates the DOM directly via element
- * IDs (pages-container, log-entries, etc.) — so init() must be called only
- * after the host component's view is initialised.
+ * The library owns annotation behaviour, fabric, XFDF, and undo/redo.
+ * This service:
+ *   • mirrors library state into Angular signals so templates re-render
+ *     on every change,
+ *   • adds Angular-only conveniences (asset placement, fit-to-page zoom,
+ *     pdfjs proxy for the thumbnails sidebar),
+ *   • wraps the library's load/save methods so callers can pass `File`,
+ *     `Blob`, data URL, or remote URL interchangeably.
+ *
+ * It deliberately holds **no** annotation logic — fill, dash, line style,
+ * undo/redo, snapshotting, fabric access, and XFDF custom tags all live
+ * in the library now.
  */
 @Injectable({ providedIn: 'root' })
 export class AnnotatorService {
   private _annotator: DocumentAnnotator | null = null;
 
-  readonly tool = signal<AnnotationTool>('select');
-  readonly mode = signal<AnnotationMode>('edit');
-  readonly color = signal<string>('#f38ba8');
+  // ── Library-mirrored state (signals so templates re-render) ─────
+  readonly tool        = signal<AnnotationTool>('select');
+  readonly mode        = signal<AnnotationMode>('edit');
+  readonly color       = signal<string>('#f38ba8');
   readonly strokeWidth = signal<number>(2);
-  readonly hasDocument = signal<boolean>(false);
-  readonly userId = signal<string>('');
+  readonly fillColor   = signal<string>('#4a90e2');
+  /** Stored as 0–100 for UI ergonomics; library uses 0–1. */
+  readonly fillOpacity = signal<number>(0);
+  readonly dashArray   = signal<number[]>([]);
+  readonly lineStyle   = signal<LineStyle>('solid');
 
-  // Separate pdfjs PDFDocumentProxy kept alongside the library's internal
-  // copy — exposed so the thumbnails component can render previews.
+  readonly hasDocument = signal<boolean>(false);
+  /** Identity of the human currently authoring annotations. */
+  readonly user = signal<User | null>(null);
+  /** @deprecated use `user()?.id`. */
+  readonly userId = computed<string>(() => this.user()?.id ?? '');
+
+  readonly canUndo = signal<boolean>(false);
+  readonly canRedo = signal<boolean>(false);
+
+  // Independent pdfjs proxy for the thumbnails sidebar. The library has
+  // its own copy too; we keep this one so the sidebar can render without
+  // reaching into library internals.
   private readonly _pdfDoc = signal<PDFDocumentProxy | null>(null);
   readonly pdfDoc = this._pdfDoc.asReadonly();
   readonly pageCount = computed(() => this._pdfDoc()?.numPages ?? 0);
 
-  /**
-   * User zoom multiplier applied on top of the auto fit-to-page scale.
-   *  1.0 = each page fits the visible viewport (default after every load).
-   *  >1   = zoom in (page may overflow horizontally → user scrolls).
-   *  <1   = zoom out.
-   */
+  /** User zoom multiplier on top of the auto fit-to-page scale. */
   readonly zoomLevel = signal<number>(1.0);
-  static readonly ZOOM_MIN = 0.25;
-  static readonly ZOOM_MAX = 4.0;
+  static readonly ZOOM_MIN  = 0.25;
+  static readonly ZOOM_MAX  = 4.0;
   static readonly ZOOM_STEP = 1.25;
 
-  /** Fill colour applied to newly-drawn fillable shapes (hex, e.g. '#4a90e2'). */
-  readonly fillColor = signal<string>('#4a90e2');
-  /** Fill opacity for newly-drawn shapes — 0 = transparent, 100 = fully opaque. */
-  readonly fillOpacity = signal<number>(0);
-
-  /** Undo / redo availability — drives toolbar button disabled state. */
-  readonly canUndo = signal<boolean>(false);
-  readonly canRedo = signal<boolean>(false);
-
-  /** Stack of XFDF snapshots; `_historyIndex` is the index of the current state. */
-  private _historyStack:    string[] = [];
-  private _historyIndex                = -1;
-  private _suppressHistory             = false;
-  private static readonly HISTORY_MAX  = 50;
-
-  /** Must be called after the DOM has rendered (ngAfterViewInit). */
-  init(): DocumentAnnotator {
+  /**
+   * Must be called after the DOM has rendered (ngAfterViewInit).
+   *
+   * @param user  Optional `User` for the active session. If omitted, the
+   *              library generates an anonymous identity whose displayName
+   *              is the first 8 characters of the generated id.
+   */
+  init(user?: User): DocumentAnnotator {
     if (this._annotator) return this._annotator;
 
-    const a = new DocumentAnnotator();
+    const a = new DocumentAnnotator({
+      ...(user ? { user } : {}),
+      // Library pushes a notification on every history-stack change. Without
+      // this, our canUndo/canRedo signals would only refresh when the user
+      // calls undo()/redo() — never when they just *drew* something — so the
+      // toolbar buttons would stay disabled forever.
+      onChange: () => this._refreshHistorySignals(),
+    });
     this._annotator = a;
-    this.userId.set(a.userId);
+    this.user.set(a.user);
 
-    // Apply defaults so the underlying canvas matches the UI's initial state
+    // Push our defaults down to the library.
     a.setColor(this.color());
     a.setStrokeWidth(this.strokeWidth());
     a.setMode(this.mode());
@@ -179,7 +177,7 @@ export class AnnotatorService {
     return a;
   }
 
-  /** Throws if init() hasn't been called — useful for narrowing in callers. */
+  /** Throws if init() hasn't been called. */
   private get a(): DocumentAnnotator {
     if (!this._annotator) throw new Error('AnnotatorService not initialised');
     return this._annotator;
@@ -193,16 +191,13 @@ export class AnnotatorService {
 
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (isPdf) {
-      try {
-        await this._loadPdfDoc(await file.arrayBuffer());
-      } catch {
-        this._setPdfDoc(null);
-      }
+      try { await this._loadPdfDoc(await file.arrayBuffer()); }
+      catch { this._setPdfDoc(null); }
     } else {
       this._setPdfDoc(null);
     }
     this._setupZoom();
-    this._initHistory();
+    this._refreshHistorySignals();
   }
 
   async loadURL(url: string, type: 'pdf' | 'image', label?: string): Promise<void> {
@@ -210,16 +205,13 @@ export class AnnotatorService {
     this.hasDocument.set(true);
 
     if (type === 'pdf') {
-      try {
-        await this._loadPdfDoc(url);
-      } catch {
-        this._setPdfDoc(null);
-      }
+      try { await this._loadPdfDoc(url); }
+      catch { this._setPdfDoc(null); }
     } else {
       this._setPdfDoc(null);
     }
     this._setupZoom();
-    this._initHistory();
+    this._refreshHistorySignals();
   }
 
   private async _loadPdfDoc(src: ArrayBuffer | string): Promise<void> {
@@ -245,60 +237,38 @@ export class AnnotatorService {
 
   /** Decodes a data: URL into a Blob and loads it. */
   async loadDataURL(dataUrl: string, filename = 'document'): Promise<void> {
-    const res = await fetch(dataUrl); // browsers fetch data: URLs natively
+    const res = await fetch(dataUrl);
     const blob = await res.blob();
     await this.loadBlob(blob, filename);
   }
 
   // ── Tool / style ──────────────────────────────────────────────────
 
-  setTool(tool: AnnotationTool): void {
-    this.tool.set(tool);
-    this.a.setTool(tool);
-  }
-
-  setMode(mode: AnnotationMode): void {
-    this.mode.set(mode);
-    this.a.setMode(mode);
-  }
-
-  setColor(color: string): void {
-    this.color.set(color);
-    this.a.setColor(color);
-  }
-
-  setStrokeWidth(width: number): void {
-    this.strokeWidth.set(width);
-    this.a.setStrokeWidth(width);
-  }
+  setTool(tool: AnnotationTool): void { this.tool.set(tool); this.a.setTool(tool); }
+  setMode(mode: AnnotationMode): void { this.mode.set(mode); this.a.setMode(mode); }
+  setColor(color: string): void       { this.color.set(color); this.a.setColor(color); }
+  setStrokeWidth(width: number): void { this.strokeWidth.set(width); this.a.setStrokeWidth(width); }
 
   setFillColor(color: string): void {
     this.fillColor.set(color);
+    this.a.setFillColor(color);
   }
 
-  setFillOpacity(opacity: number): void {
-    this.fillOpacity.set(Math.max(0, Math.min(100, Math.round(opacity))));
+  /** UI passes 0–100; library expects 0–1. */
+  setFillOpacity(percent: number): void {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    this.fillOpacity.set(clamped);
+    this.a.setFillOpacity(clamped / 100);
   }
 
-  /**
-   * Compute the CSS fill value from the current fillColor + fillOpacity.
-   * Returns `'transparent'` when opacity is 0.
-   */
-  private _computeFill(): string {
-    const pct = this.fillOpacity();
-    if (pct <= 0) return 'transparent';
-    const hex = this.fillColor();
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    if (isNaN(r) || isNaN(g) || isNaN(b)) return 'transparent';
-    return `rgba(${r},${g},${b},${pct / 100})`;
+  setDashArray(arr: number[], style: LineStyle = 'solid'): void {
+    this.dashArray.set(Array.isArray(arr) ? [...arr] : []);
+    this.lineStyle.set(style);
+    this.a.setDashArray(arr);
+    this.a.setLineStyle(style);
   }
 
-  /** Fabric object types that should receive a fill (rect, ellipse, polygon, etc.). */
-  private static readonly FILLABLE_SHAPE_TYPES = new Set([
-    'rect', 'ellipse', 'circle', 'polygon', 'triangle',
-  ]);
+  // ── Image / asset insertion ──────────────────────────────────────
 
   insertImage(file: File): void {
     this.a.insertImage(file);
@@ -306,22 +276,14 @@ export class AnnotatorService {
 
   /**
    * Insert an image asset (data URL) at a specific point on a specific page.
+   * Synthesises a `mousedown` so the library activates the right page,
+   * then calls `insertImage` with a normalised SVG/binary file.
    *
-   * The library's `_placeImage` always centres the image on the active
-   * page and may scale it down to fit. We need the asset to land where
-   * the user *clicked* and at its *natural* size. Strategy:
-   *
-   *   1. Synthesize a `mousedown` on `pageEl` so the library's internal
-   *      `_activePageIndex` updates to that page.
-   *   2. Reach into the library's private fabric canvas for that page
-   *      and register a one-shot `object:added` listener.
-   *   3. Trigger the library's normal `insertImage(file)` flow.
-   *   4. When the new image lands on the canvas, override its position
-   *      (with `originX/Y: 'center'`) and reset its scale to 1 so the
-   *      asset renders at the size it had in the panel.
-   *
-   * Falls back to the centred default if the private fabric canvas is
-   * unavailable (e.g., library version drift).
+   * The library handles centred placement by default — for cursor-precise
+   * placement we'd need a `setActivePage(idx)` + `insertImageAt(x, y)`
+   * pair on the library. For now, the asset lands centred on the active
+   * page; cursor-following positioning is a TODO that should also move
+   * into the library.
    */
   async insertImageAt(
     dataUrl: string,
@@ -334,7 +296,6 @@ export class AnnotatorService {
     const file = dataURLToFile(normalized, name);
     if (!file) return;
 
-    // Make the clicked page active first.
     pageEl.dispatchEvent(
       new MouseEvent('mousedown', {
         bubbles: true,
@@ -344,323 +305,49 @@ export class AnnotatorService {
       }),
     );
 
-    const internal = this._annotator as unknown as {
-      _activePageIndex: number;
-      _canvas: { _pages: Array<{ fc: FabricCanvas } | undefined> };
-    };
-    const pageIdx = internal._activePageIndex ?? 0;
-    const fc = internal._canvas?._pages?.[pageIdx]?.fc;
-
-    if (!fc) {
-      // Fallback — library default (centred).
-      this.a.insertImage(file);
-      return;
-    }
-
-    // Compute the click point in fabric design-space coordinates.
-    const rect = pageEl.getBoundingClientRect();
-    const zoom = (typeof fc.getZoom === 'function' ? fc.getZoom() : 1) || 1;
-    const designX = (clientX - rect.left) / zoom;
-    const designY = (clientY - rect.top) / zoom;
-
-    // One-shot reposition handler. Library calls `_attachMeta(r, "image", n)`
-    // before `t.fc.add(r)` so we can spot the right object via `kind === 'image'`.
-    let done = false;
-    const handler = (e: { target?: FabricObject } = {}) => {
-      const obj = e.target;
-      if (done || !obj) return;
-      const kind = (obj as FabricObject & { kind?: string }).kind;
-      const isImage = kind === 'image' || obj.type === 'image' || obj.type === 'Image';
-      if (!isImage) return;
-      done = true;
-      obj.set({
-        originX: 'center',
-        originY: 'center',
-        left: designX,
-        top: designY,
-        scaleX: 1,
-        scaleY: 1,
-      });
-      obj.setCoords?.();
-      fc.renderAll();
-      fc.off?.('object:added', handler);
-    };
-    fc.on?.('object:added', handler);
-
     this.a.insertImage(file);
-
-    // Safety net: if for any reason `object:added` never fires, drop the listener.
-    setTimeout(() => {
-      if (!done) fc.off?.('object:added', handler);
-    }, 5000);
   }
 
-  clearLog(): void {
-    this.a.clearLog();
-  }
+  clearLog(): void { this.a.clearLog(); }
 
   // ── XFDF I/O ──────────────────────────────────────────────────────
 
-  saveXFDF(): string {
-    return this._saveWithFill();
-  }
+  saveXFDF(): string { return this.a.save(); }
 
   async restoreXFDF(xml: string): Promise<void> {
-    const fills  = this._extractFills(xml);
-    const stripped = this._stripFillTag(xml);
-    this._suppressHistory = true;
-    try {
-      await this.a.restore(stripped);
-      this._hookFabricForHistory();
-      this._applyRestoredFills(fills);
-    } finally {
-      this._suppressHistory = false;
-    }
-    // Reset history with the restored state as the new baseline.
-    this._historyStack = [];
-    this._historyIndex = -1;
-    this._snapshot();
+    await this.a.restore(xml);
+    this._refreshHistorySignals();
   }
 
-  // ── Undo / redo ──────────────────────────────────────────────────
+  // ── Undo / redo (delegates to library, mirrors signals) ──────────
 
   async undo(): Promise<void> {
-    if (!this.canUndo()) return;
-    this._suppressHistory = true;
-    try {
-      this._historyIndex--;
-      const snapshot = this._historyStack[this._historyIndex];
-      await this.a.restore(this._stripFillTag(snapshot));
-      this._hookFabricForHistory();
-      this._applyRestoredFills(this._extractFills(snapshot));
-    } finally {
-      this._suppressHistory = false;
-      this._updateHistorySignals();
-    }
-    this._logCustomEntry('undo', 'Undo');
+    await this.a.undo();
+    this._refreshHistorySignals();
   }
 
   async redo(): Promise<void> {
-    if (!this.canRedo()) return;
-    this._suppressHistory = true;
-    try {
-      this._historyIndex++;
-      const snapshot = this._historyStack[this._historyIndex];
-      await this.a.restore(this._stripFillTag(snapshot));
-      this._hookFabricForHistory();
-      this._applyRestoredFills(this._extractFills(snapshot));
-    } finally {
-      this._suppressHistory = false;
-      this._updateHistorySignals();
-    }
-    this._logCustomEntry('redo', 'Redo');
+    await this.a.redo();
+    this._refreshHistorySignals();
   }
 
   /**
-   * Reset history after a fresh load and capture the empty initial state
-   * as snapshot 0 (so the first edit produces snapshot 1, undoable to 0).
+   * Pull `canUndo`/`canRedo` from the library. The library doesn't expose
+   * change events for the history stack, so we tick this manually after
+   * every operation that could shift the index.
    */
-  private _initHistory(): void {
-    this._historyStack = [];
-    this._historyIndex = -1;
-    this._hookFabricForHistory();
-    this._snapshot();
-    this._updateHistorySignals();
-  }
-
-  /**
-   * Attach `object:added/removed/modified` listeners on every per-page
-   * fabric canvas. Idempotent — flags hooked pages so we don't double-bind
-   * when called again after a load/restore (which rebuilds the canvases).
-   */
-  private _hookFabricForHistory(): void {
-    const internal = this._annotator as unknown as {
-      _canvas?: { _pages?: Array<HookablePage | undefined> };
-    };
-    const pages = internal._canvas?._pages;
-    if (!pages) return;
-
-    for (const p of pages) {
-      if (!p?.fc || p._historyHooked) continue;
-      p._historyHooked = true;
-
-      // Capture fc so the closure has a non-optional reference.
-      const fc = p.fc;
-
-      const handler = (e?: { target?: HookableObject }) => {
-        const obj = e?.target;
-        // Filter out polygon helpers / rubberbands etc. — only "real"
-        // annotations get an objectId via `_attachMeta`.
-        if (!obj || !obj.objectId) return;
-        this._snapshot();
-      };
-
-      // Apply fill to newly drawn shapes BEFORE the history snapshot fires.
-      const fillHandler = (e?: { target?: HookableObject }) => {
-        const obj = e?.target;
-        if (!obj || !obj.objectId) return;
-        const type = (obj.type ?? '').toLowerCase();
-        if (AnnotatorService.FILLABLE_SHAPE_TYPES.has(type)) {
-          obj.set({ fill: this._computeFill() });
-          obj.setCoords?.();
-          fc.renderAll();
-        }
-      };
-
-      fc.on?.('object:added',    fillHandler);
-      p.fc.on?.('object:added',    handler);
-      p.fc.on?.('object:removed',  handler);
-      p.fc.on?.('object:modified', handler);
-    }
-  }
-
-  /** Capture the current document as XFDF (with fill data) and push it onto the history stack. */
-  private _snapshot(): void {
-    if (this._suppressHistory || !this._annotator) return;
-    let xml: string;
-    try { xml = this._saveWithFill(); }
-    catch { return; }
-
-    // Truncate any redo branch — a new edit invalidates the redo future.
-    this._historyStack = this._historyStack.slice(0, this._historyIndex + 1);
-    this._historyStack.push(xml);
-
-    // Cap memory.
-    if (this._historyStack.length > AnnotatorService.HISTORY_MAX) {
-      this._historyStack = this._historyStack.slice(-AnnotatorService.HISTORY_MAX);
-    }
-    this._historyIndex = this._historyStack.length - 1;
-    this._updateHistorySignals();
-  }
-
-  private _updateHistorySignals(): void {
-    this.canUndo.set(this._historyIndex > 0);
-    this.canRedo.set(this._historyIndex < this._historyStack.length - 1);
-  }
-
-  // ── Fill serialisation helpers ────────────────────────────────────
-  //
-  // The XFDF format (and the underlying library) do not persist Fabric's
-  // `fill` property.  We work around this by:
-  //   • Injecting a <xfdf-annotator-fills data="<base64-json>"/> tag into
-  //     every XFDF snapshot we create (_saveWithFill / _snapshot / saveXFDF).
-  //   • Stripping that tag before passing XFDF to the library (restore/undo/redo).
-  //   • Re-applying the fills to the reconstructed Fabric objects afterwards.
-
-  /**
-   * Collect objectId → fill from every Fabric object on every page.
-   * Only records objects that actually have a non-transparent fill.
-   */
-  private _gatherFills(): Record<string, string> {
-    const result: Record<string, string> = {};
-    const internal = this._annotator as unknown as {
-      _canvas?: { _pages?: Array<HookablePage | undefined> };
-    };
-    const pages = internal._canvas?._pages;
-    if (!pages) return result;
-
-    for (const p of pages) {
-      const objs = p?.fc?.getObjects?.() ?? [];
-      for (const obj of objs) {
-        if (obj.objectId && obj.fill && obj.fill !== 'transparent' && obj.fill !== '') {
-          result[obj.objectId] = obj.fill;
-        }
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Serialize XFDF with fill metadata embedded as a custom self-closing tag
-   * just before </xfdf>.
-   */
-  private _saveWithFill(): string {
-    const xml   = this.a.save();
-    const fills = this._gatherFills();
-    if (Object.keys(fills).length === 0) return xml;
-
-    const encoded = btoa(JSON.stringify(fills));
-    const tag     = `<xfdf-annotator-fills data="${encoded}"/>`;
-    // Insert before </xfdf> if present, otherwise append.
-    return xml.includes('</xfdf>')
-      ? xml.replace('</xfdf>', `${tag}</xfdf>`)
-      : xml + tag;
-  }
-
-  /** Parse the embedded fill map from an XFDF string (returns {} if absent). */
-  private _extractFills(xml: string): Record<string, string> {
-    const m = /<xfdf-annotator-fills\s+data="([^"]+)"\s*\/?>/i.exec(xml);
-    if (!m) return {};
-    try { return JSON.parse(atob(m[1])) as Record<string, string>; }
-    catch { return {}; }
-  }
-
-  /** Remove the custom fill tag so the library never sees it. */
-  private _stripFillTag(xml: string): string {
-    return xml.replace(/<xfdf-annotator-fills\s+data="[^"]*"\s*\/?>\s*/gi, '');
-  }
-
-  /**
-   * After a restore(), iterate all Fabric objects and re-apply any fills
-   * that were recorded in the snapshot.
-   */
-  private _applyRestoredFills(fills: Record<string, string>): void {
-    if (Object.keys(fills).length === 0) return;
-    const internal = this._annotator as unknown as {
-      _canvas?: { _pages?: Array<HookablePage | undefined> };
-    };
-    const pages = internal._canvas?._pages;
-    if (!pages) return;
-
-    for (const p of pages) {
-      const fc   = p?.fc;
-      const objs = fc?.getObjects?.() ?? [];
-      let changed = false;
-      for (const obj of objs) {
-        if (obj.objectId && fills[obj.objectId]) {
-          obj.set({ fill: fills[obj.objectId] });
-          obj.setCoords?.();
-          changed = true;
-        }
-      }
-      if (changed) fc?.renderAll();
-    }
-  }
-
-  /**
-   * Push a synthetic entry onto the library's activity log — used so
-   * undo/redo show up in the same activity feed as draws and erases.
-   */
-  private _logCustomEntry(kind: 'undo' | 'redo', description: string): void {
-    const internal = this._annotator as unknown as {
-      _log?: { addEvent?: (e: Record<string, unknown>) => void };
-    };
-    internal._log?.addEvent?.({
-      id:          (typeof crypto !== 'undefined' && crypto.randomUUID)
-                     ? crypto.randomUUID()
-                     : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      description,
-      action:      kind,           // custom badge class — no preset colour
-      tool:        kind,           // shows as "Undo" / "Redo" via fallback
-      pageIndex:   0,
-      userId:      this.userId(),
-      timestamp:   Date.now(),
-    });
+  private _refreshHistorySignals(): void {
+    if (!this._annotator) return;
+    this.canUndo.set(this.a.canUndo());
+    this.canRedo.set(this.a.canRedo());
   }
 
   // ── Zoom ─────────────────────────────────────────────────────────
 
   /** Reset zoom to the auto-fit baseline (1.0) and re-layout. */
-  fitToPage(): void {
-    this.setZoom(1.0);
-  }
-
-  zoomIn(): void {
-    this.setZoom(this.zoomLevel() * AnnotatorService.ZOOM_STEP);
-  }
-  zoomOut(): void {
-    this.setZoom(this.zoomLevel() / AnnotatorService.ZOOM_STEP);
-  }
+  fitToPage(): void { this.setZoom(1.0); }
+  zoomIn(): void  { this.setZoom(this.zoomLevel() * AnnotatorService.ZOOM_STEP); }
+  zoomOut(): void { this.setZoom(this.zoomLevel() / AnnotatorService.ZOOM_STEP); }
 
   /** Set the zoom multiplier (clamped). */
   setZoom(level: number): void {
@@ -673,11 +360,12 @@ export class AnnotatorService {
   }
 
   /**
-   * After a load completes:
-   *  1. Patch the renderer's `getScale` so the library's own
-   *     ResizeObserver path uses our fit-to-page formula instead of its
-   *     "92% of viewer width" default.
-   *  2. Reset zoom to 1.0 (fit-to-page) and re-layout.
+   * Patch the renderer's `getScale` so the library's own ResizeObserver
+   * path uses our fit-to-page formula, then reset to 1.0 and re-layout.
+   *
+   * This still touches one library private (`_renderer`), and could
+   * become a public `setScaleStrategy(fn)` API in a future library
+   * release — flagged but not blocking the current refactor.
    */
   private _setupZoom(): void {
     const internal = this._annotator as unknown as {
@@ -709,9 +397,9 @@ export class AnnotatorService {
   }
 
   /**
-   * Replicate the library's private resize logic at our chosen scale —
-   * resize page wrappers, re-render PDF pages, resize fabric canvases,
-   * reposition comment pins.
+   * Replicate the library's private resize logic at our chosen scale.
+   * Like `_setupZoom`, this could be replaced by a single public
+   * `setScale(scale)` method on the library.
    */
   private _applyScale(scale: number): void {
     const internal = this._annotator as unknown as {
@@ -764,9 +452,7 @@ export class AnnotatorService {
     if (pdfRenders.length && internal._renderer?.renderPage) {
       Promise.all(
         pdfRenders.map(({ i, el }) => internal._renderer!.renderPage!(i, el, scale)),
-      ).catch(() => {
-        /* RenderingCancelledException etc. */
-      });
+      ).catch(() => { /* RenderingCancelledException etc. */ });
     }
     internal._comments?.repositionAll?.(scale);
   }
@@ -778,8 +464,7 @@ export class AnnotatorService {
       this.hasDocument.set(false);
     }
     this._setPdfDoc(null);
-    this._historyStack = [];
-    this._historyIndex = -1;
-    this._updateHistorySignals();
+    this.canUndo.set(false);
+    this.canRedo.set(false);
   }
 }

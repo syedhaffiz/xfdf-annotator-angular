@@ -40,11 +40,16 @@ All of these are wired together by querying the host page for a fixed set of ele
 
 - Multi-format input: PDFs (multi-page) and raster images (PNG, JPG, JPEG, GIF, WebP, SVG, BMP)
 - Drawing tools: Select, Freehand, Line, Arrow, Rectangle, Ellipse, Polygon, Text, Comment, Image stamp, Eraser
-- XFDF round-trip: standard `<annots>` for interop + lossless Fabric snapshot extension for pixel-perfect restore
-- Comment threads with numbered pins, replies, and persistence
-- Activity log of every draw / erase / image / comment event
+- Per-shape stroke colour, stroke width, dash pattern, fill colour, and fill opacity
+- Cloud-border line style (`'arc'`) for revision-cloud / scalloped rectangles, lines, and polygons
+- Built-in undo / redo with reactive `canUndo()` / `canRedo()` getters, hooked to a toolbar via the library's `onChange` callback
+- First-class `User` identity (`{ id, displayName }`) shown in the activity log, comment threads, and a top-bar badge
+- XFDF round-trip: standard `<annots>` for interop + lossless Fabric snapshot extension for pixel-perfect restore (Fabric serialises `fill`, `strokeDashArray`, and arc-cloud paths automatically — no custom XFDF tags required)
+- Comment threads with numbered pins, replies, and persistence (with `userName` stored alongside `userId`)
+- Activity log of every draw / erase / image / comment event (also persists `userName`)
 - Two interaction modes: `edit` and `view` (read-only)
 - Responsive scaling (auto re-renders on container resize) and HiDPI rendering
+- Lazy PDF.js worker fallback — consumer overrides of `pdfjsLib.GlobalWorkerOptions.workerSrc` always win regardless of import order
 
 ---
 
@@ -68,16 +73,24 @@ pnpm add xfdf-annotator fabric pdfjs-dist
 // package.json (resulting fragment)
 {
   "dependencies": {
-    "xfdf-annotator": "^0.1.0",
+    "xfdf-annotator": "^0.1.3",
     "fabric": "^7.3.1",
-    "pdfjs-dist": "^5.6.205"
+    "pdfjs-dist": "^5.7.284"
   }
 }
 ```
 
+> **Local development tip** — when iterating on the library and the app together, point the dependency at the local checkout instead:
+>
+> ```jsonc
+> "xfdf-annotator": "file:../xfdf-annotator-v1"
+> ```
+>
+> Re-run `npm install` after each library rebuild. To install a freshly built local library *without* rewriting `package.json`, use `npm install ../xfdf-annotator-v1 --no-save`. Switch back to the npm version reference once you're done.
+
 ### 2.2 Configure the PDF.js worker
 
-`PDFRenderer` initialises `pdfjsLib.GlobalWorkerOptions.workerSrc` to a CDN URL by default. CDNs occasionally lag behind `pdfjs-dist` releases, so the recommended pattern is to ship the worker as a static asset and pin it before any document is loaded.
+`PDFRenderer` falls back to a CDN URL **lazily** (inside its `load()` method), and only when `pdfjsLib.GlobalWorkerOptions.workerSrc` isn't already set. That means consumer overrides always win, regardless of when they run relative to the library's imports. CDNs occasionally lag behind `pdfjs-dist` releases anyway, so the recommended pattern is to ship the worker as a static asset and pin it explicitly.
 
 **Angular** (using `angular.json` `assets`):
 
@@ -255,11 +268,16 @@ export class App implements AfterViewInit, OnDestroy {
 
 ### 5.2 The annotator service
 
+The service is a thin reactive shim — the library owns annotation behaviour, fabric, XFDF, undo/redo, fill, dash, and arc-cloud rendering. The Angular service only mirrors state into signals and forwards calls.
+
 ```ts
 // services/annotator.service.ts
 import { Injectable, computed, signal } from '@angular/core';
-import { DocumentAnnotator,
-         type AnnotationTool, type AnnotationMode } from 'xfdf-annotator';
+import {
+  DocumentAnnotator,
+  type AnnotationTool, type AnnotationMode,
+  type LineStyle, type User,
+} from 'xfdf-annotator';
 import * as pdfjsLib from 'pdfjs-dist';
 
 // Pin the PDF.js worker before the library tries to load any PDF.
@@ -269,20 +287,37 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdfjs/pdf.worker.min.mjs';
 export class AnnotatorService {
   private _annotator: DocumentAnnotator | null = null;
 
+  // ── Library-mirrored state ──
   readonly tool        = signal<AnnotationTool>('select');
   readonly mode        = signal<AnnotationMode>('edit');
   readonly color       = signal<string>('#f38ba8');
   readonly strokeWidth = signal<number>(2);
+  readonly fillColor   = signal<string>('#4a90e2');
+  readonly fillOpacity = signal<number>(0);   // 0–100 in UI; library uses 0–1
+  readonly dashArray   = signal<number[]>([]);
+  readonly lineStyle   = signal<LineStyle>('solid');
+
   readonly hasDocument = signal<boolean>(false);
-  readonly userId      = signal<string>('');
+  readonly user        = signal<User | null>(null);
+  readonly userId      = computed(() => this.user()?.id ?? '');  // legacy
 
-  init(): DocumentAnnotator {
+  readonly canUndo = signal(false);
+  readonly canRedo = signal(false);
+
+  init(user?: User): DocumentAnnotator {
     if (this._annotator) return this._annotator;
-    const a = new DocumentAnnotator();
+    const a = new DocumentAnnotator({
+      ...(user ? { user } : {}),
+      // Library pushes a notification on every history-stack change.
+      // Without this, canUndo/canRedo would only refresh inside our own
+      // undo()/redo() — never when the user *drew* something — so the
+      // toolbar buttons would stay [disabled] forever.
+      onChange: () => this._refreshHistorySignals(),
+    });
     this._annotator = a;
-    this.userId.set(a.userId);
+    this.user.set(a.user);
 
-    // Push the UI defaults into the underlying canvas
+    // Push UI defaults into the underlying canvas
     a.setColor(this.color());
     a.setStrokeWidth(this.strokeWidth());
     a.setMode(this.mode());
@@ -298,17 +333,47 @@ export class AnnotatorService {
   async loadFile(file: File): Promise<void> {
     await this.a.loadFile(file);
     this.hasDocument.set(true);
+    this._refreshHistorySignals();
   }
 
-  setTool(t: AnnotationTool):  void { this.tool.set(t); this.a.setTool(t); }
-  setMode(m: AnnotationMode):  void { this.mode.set(m); this.a.setMode(m); }
-  setColor(c: string):         void { this.color.set(c); this.a.setColor(c); }
+  setTool(t: AnnotationTool):  void { this.tool.set(t);        this.a.setTool(t); }
+  setMode(m: AnnotationMode):  void { this.mode.set(m);        this.a.setMode(m); }
+  setColor(c: string):         void { this.color.set(c);       this.a.setColor(c); }
   setStrokeWidth(w: number):   void { this.strokeWidth.set(w); this.a.setStrokeWidth(w); }
-  insertImage(f: File):        void { this.a.insertImage(f); }
+  setFillColor(c: string):     void { this.fillColor.set(c);   this.a.setFillColor(c); }
 
-  saveXFDF(): string                 { return this.a.save(); }
-  async restoreXFDF(x: string)       { await this.a.restore(x); }
-  clearLog():           void         { this.a.clearLog(); }
+  /** UI uses 0–100 for ergonomics; library expects 0–1. */
+  setFillOpacity(percent: number): void {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    this.fillOpacity.set(clamped);
+    this.a.setFillOpacity(clamped / 100);
+  }
+
+  setDashArray(arr: number[], style: LineStyle = 'solid'): void {
+    this.dashArray.set([...arr]);
+    this.lineStyle.set(style);
+    this.a.setDashArray(arr);
+    this.a.setLineStyle(style);
+  }
+
+  // Undo / redo — library does the work; we just refresh signals.
+  async undo() { await this.a.undo(); this._refreshHistorySignals(); }
+  async redo() { await this.a.redo(); this._refreshHistorySignals(); }
+
+  private _refreshHistorySignals(): void {
+    if (!this._annotator) return;
+    this.canUndo.set(this.a.canUndo());
+    this.canRedo.set(this.a.canRedo());
+  }
+
+  saveXFDF(): string { return this.a.save(); }
+  async restoreXFDF(x: string): Promise<void> {
+    await this.a.restore(x);
+    this._refreshHistorySignals();
+  }
+
+  insertImage(f: File): void { this.a.insertImage(f); }
+  clearLog(): void           { this.a.clearLog(); }
 
   destroy(): void {
     if (this._annotator) {
@@ -316,9 +381,13 @@ export class AnnotatorService {
       this._annotator = null;
       this.hasDocument.set(false);
     }
+    this.canUndo.set(false);
+    this.canRedo.set(false);
   }
 }
 ```
+
+> **Why mirror the library's state into signals at all?** Angular templates can't reactively read non-signal values. The library exposes plain getters (`canUndo()`, `getColor()`, …) which never *push* updates. The `onChange` callback is the bridge: every time the library mutates its history stack, we pull the new values and push them into signals so `[disabled]="!canUndo()"` actually updates.
 
 ### 5.3 The DOM scaffold (template)
 
@@ -356,18 +425,45 @@ The full scaffold from `app.html` includes Bootstrap chrome — here is the trim
 
 ### 5.4 Annotation toolbar component
 
+The reference toolbar exposes every styling control the library supports: tool buttons, stroke colour, stroke width, line type (dash patterns + arc-cloud), fill colour, fill opacity, and undo/redo.
+
 ```ts
 // components/annotation-toolbar/annotation-toolbar.component.ts
-import { Component, inject, input, ChangeDetectionStrategy } from '@angular/core';
-import type { AnnotationTool } from 'xfdf-annotator';
+import {
+  ChangeDetectionStrategy, Component, HostListener,
+  computed, inject, input, signal,
+} from '@angular/core';
+import type { AnnotationTool, LineStyle } from 'xfdf-annotator';
 import { AnnotatorService } from '../../services/annotator.service';
 
 export interface ToolDef {
-  tool:  AnnotationTool;
+  tool: AnnotationTool;
   title: string;
-  icon:  string;     // e.g. 'bi-cursor'
-  key?:  string;     // single-letter shortcut
+  icon: string;
+  key?: string;
 }
+
+/** A line-type pattern selectable from the popup. */
+export interface DashPattern {
+  id: string;
+  label: string;
+  /** Empty array = solid line. Ignored when `lineStyle === 'arc'`. */
+  dashArray: number[];
+  /** `'arc'` triggers cloud-border rendering for new shapes. */
+  lineStyle?: LineStyle;
+}
+
+export const DASH_PATTERNS: DashPattern[] = [
+  { id: 'solid',         label: 'Solid',                dashArray: []                       },
+  { id: 'dotted',        label: 'Dotted',               dashArray: [2, 4]                   },
+  { id: 'short-dash',    label: 'Short Dashed',         dashArray: [6, 4]                   },
+  { id: 'long-dash',     label: 'Long Dashed',          dashArray: [12, 6]                  },
+  { id: 'extra-long',    label: 'Extra Long Dashed',    dashArray: [18, 8]                  },
+  { id: 'dash-dot',      label: 'Dash–Dot',             dashArray: [10, 4, 2, 4]            },
+  { id: 'dash-dot-dot',  label: 'Dash–Dot–Dot',         dashArray: [10, 4, 2, 4, 2, 4]      },
+  { id: 'long-dash-dot', label: 'Long Dash–Dot',        dashArray: [16, 5, 3, 5]            },
+  { id: 'arc',           label: 'Arc Line (Cloud)',     dashArray: [],  lineStyle: 'arc'    },
+];
 
 @Component({
   selector: 'app-annotation-toolbar',
@@ -379,10 +475,21 @@ export class AnnotationToolbarComponent {
   readonly annotator = inject(AnnotatorService);
   readonly tools     = input.required<ToolDef[]>();
 
+  readonly patterns      = DASH_PATTERNS;
+  readonly lineMenuOpen  = signal(false);
+  readonly lineMenuPos   = signal({ left: 0, top: 0 });
+
+  readonly currentPattern = computed<DashPattern>(() => {
+    const cur = this.annotator.dashArray();
+    const ls  = this.annotator.lineStyle();
+    return DASH_PATTERNS.find(p =>
+      (p.lineStyle ?? 'solid') === ls && sameArray(p.dashArray, cur),
+    ) ?? DASH_PATTERNS[0];
+  });
+
   setTool(tool: AnnotationTool): void {
     if (this.annotator.mode() === 'view') return;
     if (tool === 'image') {
-      // Image stamp opens a file picker — let the parent handle it.
       window.dispatchEvent(new CustomEvent('xfdf:request-image-pick'));
       return;
     }
@@ -394,29 +501,46 @@ export class AnnotationToolbarComponent {
     const v = Number((e.target as HTMLInputElement).value);
     if (Number.isFinite(v)) this.annotator.setStrokeWidth(v);
   }
+  onFillColorChange(e: Event):   void { this.annotator.setFillColor((e.target as HTMLInputElement).value); }
+  onFillOpacityChange(e: Event): void {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v)) this.annotator.setFillOpacity(v);   // 0–100
+  }
+
+  toggleLineMenu(ev: MouseEvent): void {
+    ev.stopPropagation();
+    if (this.lineMenuOpen()) { this.lineMenuOpen.set(false); return; }
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    this.lineMenuPos.set({ left: rect.left, top: rect.bottom + 4 });
+    this.lineMenuOpen.set(true);
+  }
+  selectPattern(p: DashPattern): void {
+    this.annotator.setDashArray(p.dashArray, p.lineStyle ?? 'solid');
+    this.lineMenuOpen.set(false);
+  }
+  isCurrentPattern(p: DashPattern): boolean {
+    return (p.lineStyle ?? 'solid') === this.annotator.lineStyle()
+        && sameArray(p.dashArray, this.annotator.dashArray());
+  }
+  dashAttr(arr: number[]): string | null { return arr.length ? arr.join(',') : null; }
+
+  @HostListener('document:click')          onDocumentClick() { if (this.lineMenuOpen()) this.lineMenuOpen.set(false); }
+  @HostListener('document:keydown.escape') onEscape()        { if (this.lineMenuOpen()) this.lineMenuOpen.set(false); }
+
+  undo(): void { this.annotator.undo(); }
+  redo(): void { this.annotator.redo(); }
+}
+
+function sameArray(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 ```
 
-```html
-<!-- annotation-toolbar.component.html -->
-<div id="toolbar-panel" class="bg-body border rounded-pill shadow-sm p-1 d-inline-flex"
-     [class.view-mode]="annotator.mode() === 'view'">
-  @for (t of tools(); track t.tool) {
-    <button type="button"
-            class="btn btn-sm tool-btn rounded-circle"
-            [class.btn-primary]="annotator.tool() === t.tool"
-            [class.btn-light]="annotator.tool() !== t.tool"
-            [title]="t.title"
-            (click)="setTool(t.tool)">
-      <i class="bi" [class]="'bi ' + t.icon"></i>
-    </button>
-  }
-  <span class="vr mx-1"></span>
-  <input type="color" [value]="annotator.color()" (input)="onColorChange($event)" />
-  <input type="range" min="1" max="20"
-         [value]="annotator.strokeWidth()" (input)="onStrokeWidthChange($event)" />
-</div>
-```
+The template renders SVG previews of every pattern (including a real arc-chain `<path>` for the cloud option, not a fake dash) in a fixed-positioned popup so the toolbar's `overflow-x: auto` wrapper can't clip the dropdown.
+
+> **Toolbar centring gotcha** — the toolbar host wrapper must **not** use a CSS `transform` (e.g. Bootstrap's `translate-middle-x`). A non-`none` transform turns that ancestor into the containing block for `position: fixed` descendants, which would cause the line-type popup to anchor to the wrapper instead of the viewport and open off-screen. Use auto-margins (`left: 0; right: 0; margin-inline: auto; width: max-content;`) to centre it instead.
 
 ### 5.5 Tool registry (component property)
 
@@ -457,7 +581,57 @@ onKeydown(ev: KeyboardEvent): void {
 }
 ```
 
-### 5.7 Saving and restoring XFDF
+### 5.7 Top-bar user badge
+
+The top bar reads `annotator.user()` and renders a small pill with the human-readable display name. The full user id is exposed via the tooltip for support.
+
+```html
+@if (annotator.user(); as u) {
+  <span class="user-badge d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill border"
+        [title]="'User ID: ' + u.id">
+    <i class="bi bi-person-circle"></i>
+    <span class="small fw-medium text-truncate" style="max-width: 8rem;">
+      {{ u.displayName }}
+    </span>
+  </span>
+}
+```
+
+Pass an explicit `User` to `annotator.init({ id, displayName })` so the badge — and every activity log entry / comment author label — shows real names instead of a truncated UUID. When the consumer omits `user`, the library generates a random id and uses its first 8 characters as the display name.
+
+### 5.8 Undo / redo wiring
+
+The library owns the snapshot stack and pushes a notification through the `onChange` callback the service registers in `init()`. The toolbar buttons bind to `canUndo` / `canRedo` signals that the service refreshes on every notification:
+
+```html
+<button [disabled]="!annotator.canUndo()" (click)="undo()" title="Undo (Ctrl+Z)">
+  <i class="bi bi-arrow-counterclockwise"></i>
+</button>
+<button [disabled]="!annotator.canRedo()" (click)="redo()" title="Redo (Ctrl+Shift+Z)">
+  <i class="bi bi-arrow-clockwise"></i>
+</button>
+```
+
+Bind keyboard shortcuts on the host component:
+
+```ts
+@HostListener('window:keydown', ['$event'])
+onKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey) {
+    ev.preventDefault();
+    this.annotator.undo();
+  } else if ((ev.key === 'y' && (ev.ctrlKey || ev.metaKey)) ||
+             (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && ev.shiftKey)) {
+    ev.preventDefault();
+    this.annotator.redo();
+  }
+  // …other shortcuts…
+}
+```
+
+> **Without `onChange`, undo / redo would appear broken.** The service can read `a.canUndo()` at any time, but Angular templates only re-render when a *signal* changes. If we only refreshed the signals inside the service's own `undo()` / `redo()` methods, the buttons would stay `[disabled]` after the user just *drew* something — and a disabled button never fires its click handler. The library's `onChange` push is the missing edge that closes the loop.
+
+### 5.9 Saving and restoring XFDF
 
 ```ts
 // In app.ts
@@ -776,16 +950,38 @@ annotator.setMode('edit');
 const m = annotator.getMode();   // 'edit' | 'view'
 ```
 
-### 7.4 Color and stroke width
+### 7.4 Stroke, fill, and line style
 
-Colour and stroke width feed every drawing tool (freehand brush, shape strokes, polygon segments, dot indicators, text fill, comment-pin colour). Updates take effect immediately for the next draw — they don't retroactively restyle existing annotations.
+Every shape tool reads its style from six pieces of state on the library. Setting any of them affects **new** annotations only — existing annotations are not retroactively restyled.
 
 ```ts
+// Stroke
 annotator.setColor('#e74c3c');
 annotator.setStrokeWidth(3);
+annotator.setDashArray([10, 4, 2, 4]);          // dash–dot, or [] for solid
+
+// Fill (rect / ellipse / circle / polygon / triangle)
+annotator.setFillColor('#4a90e2');
+annotator.setFillOpacity(0.3);                  // 0 = transparent, 1 = opaque
+
+// Cloud-border style for new rect / line / polygon
+annotator.setLineStyle('arc');                  // or 'solid'
 ```
 
-### 7.5 Image stamping
+The Angular reference exposes all of these through the floating annotation toolbar — the line-type selector is a popup with live SVG previews (real arcs for cloud, real dashes for everything else, not approximations).
+
+### 7.5 Undo / redo
+
+```ts
+annotator.canUndo();   // boolean
+annotator.canRedo();   // boolean
+await annotator.undo();
+await annotator.redo();
+```
+
+The library maintains an XFDF snapshot stack capped at 50 entries; every annotation event pushes a snapshot. Loading a new document resets the stack to a fresh baseline. See [§5.8](#58-undo--redo-wiring) for the Angular wire-up.
+
+### 7.6 Image stamping
 
 Two flavours:
 
@@ -803,7 +999,7 @@ That's the library default. The reference project adds a `insertImageAt(dataUrl,
 
 Use this when you have a pre-defined assets palette and want pixel-precise placement (drag-and-drop, click-to-place from a sidebar, etc.). See [§12.2](#122-asset-palette-with-click-to-place) for the full pattern.
 
-### 7.6 Comments
+### 7.7 Comments
 
 Comments are Figma-style numbered pins with reply threads.
 
@@ -814,9 +1010,9 @@ Comments are Figma-style numbered pins with reply threads.
 
 The comment system requires both `#comment-thread-panel` (with `.ctp-pin-num`, `.ctp-messages`, `.ctp-close`, `.ctp-reply-input`, `.ctp-reply-btn`) and `#new-comment-popup` (with a `<textarea>`, `#btn-post-comment`, `#btn-cancel-comment`). Both must exist when `DocumentAnnotator` is constructed.
 
-Pin coordinates are stored in *base* (unzoomed) page space, so they reposition correctly when the canvas re-scales.
+Pin coordinates are stored in *base* (unzoomed) page space, so they reposition correctly when the canvas re-scales. Comment messages persist both `userId` and `userName`, so threads stay readable on later reloads even if the user is no longer in the host application's directory.
 
-### 7.7 Activity log
+### 7.8 Activity log
 
 Every draw, erase, image stamp, and comment placement fires an `ActivityEntry` callback that prepends a row into `#log-entries`. Entry shape:
 
@@ -829,9 +1025,12 @@ interface ActivityEntry {
   pageIndex:    number;
   objectId?:    string;
   userId:       string;
+  userName?:    string;        // displayName at event time — persisted in XFDF
   timestamp:    number;        // ms since epoch
 }
 ```
+
+The library's renderer prefers `userName` (when present) over a truncated `userId` — so log rows show real names, while still tooltipping the underlying id for support.
 
 Log entries are persisted in XFDF as the `ext:log` extension. After a `restore()`, the log re-populates from saved entries automatically.
 
@@ -839,7 +1038,7 @@ Log entries are persisted in XFDF as the `ext:log` extension. After a `restore()
 annotator.clearLog();
 ```
 
-### 7.8 Responsive scaling and HiDPI
+### 7.9 Responsive scaling and HiDPI
 
 `DocumentAnnotator` attaches a `ResizeObserver` to `#viewer-panel`. When the panel resizes, it:
 
@@ -852,16 +1051,17 @@ PDF rendering applies `displayScale × devicePixelRatio` to backing-canvas pixel
 
 The reference project replaces the library's default `getScale` to add a user-controlled zoom level on top of fit-to-page (see [§12.1](#121-user-zoom-on-top-of-fit-to-page)).
 
-### 7.9 PDF.js worker pinning
+### 7.10 PDF.js worker pinning
 
-`PDFRenderer` will set a default CDN worker URL **only if** `pdfjsLib.GlobalWorkerOptions.workerSrc` is unset. To pin to a local copy, set the worker before any `loadFile`/`loadURL` call:
+`PDFRenderer` falls back to a default CDN worker URL **only if** `pdfjsLib.GlobalWorkerOptions.workerSrc` is unset, and that fallback is checked **lazily** inside `load()` — not at module-load time. That means a consumer override always wins, regardless of import order:
 
 ```ts
 import * as pdfjsLib from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
+// ...later, the library's load() sees the override and skips the CDN URL.
 ```
 
-### 7.10 Lifecycle teardown
+### 7.11 Lifecycle teardown
 
 Always call `destroy()` on unmount. It disposes every Fabric canvas, cancels any pending PDF render tasks, revokes blob URLs, and clears the comment manager.
 
@@ -893,36 +1093,52 @@ interface DocumentAnnotatorOptions {
   newCommentPopupId?: string;   // 'new-comment-popup'
 
   // Display
-  displayScale?:      number;   // 1.5 — initial scale on top of devicePixelRatio
-  userId?:            string;   // random UUID if omitted
+  displayScale?:      number;   // 1.5
+
+  // Identity (preferred)
+  user?:              User;
+  // Identity (legacy — auto-converted to a User)
+  userId?:            string;
+
+  // Reactive hook fired on every history-stack change
+  onChange?:          () => void;
+}
+
+interface User {
+  id: string;
+  displayName: string;
 }
 ```
 
 | Method | Signature | Description |
 |---|---|---|
 | `loadFile` | `(file: File) => Promise<void>` | Open a PDF or image File |
-| `loadURL` | `(url: string, type: 'pdf' \| 'image', label?: string) => Promise<void>` | Open a document from a URL |
-| `setMode` | `(mode: 'edit' \| 'view') => void` | Switch interaction mode |
-| `getMode` | `() => 'edit' \| 'view'` | Current mode |
-| `setTool` | `(tool: AnnotationTool) => void` | Activate a tool (no-op in view mode) |
-| `setColor` | `(color: string) => void` | CSS hex stroke/fill colour |
-| `setStrokeWidth` | `(width: number) => void` | Stroke width in base units (px at scale 1) |
-| `insertImage` | `(file: File) => void` | Stamp an image onto the active page (no-op in view mode) |
+| `loadURL` | `(url, type, label?) => Promise<void>` | Open a document from a URL |
+| `setMode` / `getMode` | — | Switch / read interaction mode |
+| `setTool` | `(tool: AnnotationTool) => void` | Activate a tool |
+| `setColor` / `setStrokeWidth` | — | Stroke colour and width |
+| `setFillColor` / `setFillOpacity` | — | Fill colour, fill opacity 0–1 |
+| `setDashArray` / `setLineStyle` | — | Stroke dash pattern, `'solid'` vs `'arc'` cloud-border |
+| `getColor` / `getStrokeWidth` / `getFillColor` / `getFillOpacity` / `getDashArray` / `getLineStyle` | — | Read current style values |
+| `insertImage` | `(file: File) => void` | Stamp an image onto the active page |
 | `save` | `() => string` | Export annotations as XFDF XML |
-| `restore` | `(xfdfString: string) => Promise<void>` | Import annotations from XFDF |
+| `restore` | `(xml: string) => Promise<void>` | Import annotations from XFDF |
+| `undo` / `redo` | `() => Promise<void>` | Walk the snapshot stack |
+| `canUndo` / `canRedo` | `() => boolean` | Whether undo / redo is currently meaningful |
 | `clearLog` | `() => void` | Empty the activity log |
 | `destroy` | `() => void` | Tear down all canvases and free resources |
-| `userId` | `string` (readonly) | This session's user ID |
+| `user` | `User` (readonly) | Active user `{ id, displayName }` |
+| `userId` | `string` (readonly, deprecated) | Stable id of the active user — alias of `user.id` |
 
 ### 8.2 `AnnotationCanvas`
 
 Internal class — managed by `DocumentAnnotator`. Exposed for advanced consumers who want to embed individual page canvases.
 
 ```ts
-new AnnotationCanvas({ userId, onEvent, onCommentPlace })
+new AnnotationCanvas({ user, onEvent, onCommentPlace })
 ```
 
-Key methods: `createCanvas`, `resize`, `destroy`, `setTool`, `setMode`, `setColor`, `setStrokeWidth`, `insertImage`, `toJSON`, `loadFromData`.
+Key methods: `createCanvas`, `resize`, `destroy`, `setTool`, `setMode`, `setColor`, `setStrokeWidth`, `setFillColor`, `setFillOpacity`, `setDashArray`, `setLineStyle`, `insertImage`, `toJSON`, `loadFromData`.
 
 ### 8.3 `PDFRenderer` and `ImageRenderer`
 
@@ -967,13 +1183,16 @@ The library exports every type used in its public surface:
 ```ts
 import type {
   DocumentType, PageDimensions, IRenderer,
-  AnnotationTool, AnnotationMode,
+  AnnotationTool, AnnotationMode, LineStyle,
+  User,
   XFDFRect, XFDFVertex, XFDFAnnotation, XFDFPageData,
   XFDFDocument, XFDFSerialiseInput,
   CommentMessage, CommentThread,
   ActivityEntry,
   AnnotatorDOMOptions, DocumentAnnotatorOptions,
-  AnnotationEventHandler, CommentPlaceHandler,
+  AnnotationEventHandler,    // (entry: ActivityEntry) => void
+  AnnotationChangeHandler,   // () => void — onChange notifier
+  CommentPlaceHandler,
   AnnotationCanvasOptions,
 } from 'xfdf-annotator';
 ```
@@ -1030,6 +1249,10 @@ A saved XFDF document looks like:
 - The `ext:canvas-data` block makes them **restorable** in the same library with no information loss — fonts, image data, opacity, and metadata that don't fit the standard schema are preserved.
 
 When you call `restore(xml)`, the library uses `ext:canvas-data` first (lossless), falling back to `<annots>` only if the extension is missing.
+
+### Fill, dash, and arc-cloud round-trip — for free
+
+Fabric's default `toObject()` serialiser includes `fill`, `strokeDashArray`, and `Path` data. Because the library writes Fabric snapshots (in `ext:canvas-data`) using `fc.toObject(CUSTOM_PROPS)`, every fill colour, fill opacity, dash pattern, and arc-cloud shape **round-trips automatically through XFDF**. No custom XFDF tags or extra metadata are needed. (Earlier versions of the Angular app worked around this with extra `<xfdf-annotator-fills>` / `<xfdf-annotator-dashes>` tags; those workarounds were removed once the styling was lifted into the library at draw time.)
 
 ---
 
@@ -1278,6 +1501,21 @@ The library default centres images. Use the `insertImageAt` pattern from [§12.2
 
 **Library upgrade broke my private-field hacks.**
 The advanced patterns in [§12](#12-advanced-patterns-from-the-angular-reference) reach into underscore-prefixed fields (`_renderer`, `_baseDims`, `_canvas._pages`, etc.). They are **not** part of the public API. Pin a specific library version and re-verify on upgrade.
+
+**Undo / redo buttons stay disabled even after I draw something.**
+You forgot to wire `onChange`. The library's history stack updates correctly on every annotation event, but `canUndo()` / `canRedo()` are plain getters — Angular won't re-evaluate them until a *signal* changes. Pass an `onChange: () => this._refreshHistorySignals()` callback to `new DocumentAnnotator({...})` (the reference `AnnotatorService` already does this).
+
+**PDF still tries to fetch the worker from a CDN even though I set `workerSrc`.**
+Earlier library versions ran their CDN fallback at module-load time, before consumer overrides could win. Upgrade to **0.1.3 or later** — the fallback now runs lazily inside `load()`, so any override set anywhere before the first `loadFile()` / `loadURL()` call is preserved.
+
+**Activity log / comment thread shows opaque user IDs instead of names.**
+You constructed `DocumentAnnotator` without an explicit `user`, so the library generated a random session id and used its first 8 characters as the display name. Pass `{ user: { id, displayName } }` (or call `service.init({ id, displayName })`) to surface the real name in the badge, log, and comment threads.
+
+**Line-type popup opens off-screen.**
+Don't put a CSS `transform` on the toolbar host wrapper. A non-`none` transform makes that ancestor the containing block for `position: fixed` descendants, which mis-anchors the popup. Centre the toolbar with auto-margins (`left: 0; right: 0; margin-inline: auto; width: max-content;`) instead of Bootstrap's `translate-middle-x`.
+
+**Arc-cloud rectangle moves to the top-left of the canvas after drawing.**
+Fixed in library 0.1.3. The arc-cloud Path now generates its data in *local* coordinates and is positioned via `setPositionByOrigin(centre, 'center', 'center')`, so it always lands centred on the source rectangle's bounding box regardless of `originX`/`originY`.
 
 ---
 

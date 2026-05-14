@@ -276,14 +276,8 @@ export class AnnotatorService {
 
   /**
    * Insert an image asset (data URL) at a specific point on a specific page.
-   * Synthesises a `mousedown` so the library activates the right page,
-   * then calls `insertImage` with a normalised SVG/binary file.
-   *
-   * The library handles centred placement by default — for cursor-precise
-   * placement we'd need a `setActivePage(idx)` + `insertImageAt(x, y)`
-   * pair on the library. For now, the asset lands centred on the active
-   * page; cursor-following positioning is a TODO that should also move
-   * into the library.
+   * Converts the client-space drop/click coordinates to scene (unscaled canvas)
+   * coordinates, then delegates to the library's coordinate-aware insertImageAt.
    */
   async insertImageAt(
     dataUrl: string,
@@ -296,16 +290,19 @@ export class AnnotatorService {
     const file = dataURLToFile(normalized, name);
     if (!file) return;
 
-    pageEl.dispatchEvent(
-      new MouseEvent('mousedown', {
-        bubbles: true,
-        cancelable: true,
-        clientX,
-        clientY,
-      }),
-    );
+    // Resolve page index from the wrapper's data attribute.
+    const wrapper = pageEl.closest<HTMLElement>('[data-page-index]');
+    const pageIndex = wrapper ? parseInt(wrapper.dataset['pageIndex'] ?? '0', 10) : 0;
 
-    this.a.insertImage(file);
+    // Convert client coords to scene (unscaled canvas) coords.
+    // _currentScale equals the Fabric canvas zoom set by resize().
+    const internal = this._annotator as unknown as { _currentScale?: number };
+    const scale = internal._currentScale ?? 1;
+    const rect = pageEl.getBoundingClientRect();
+    const sceneX = (clientX - rect.left) / scale;
+    const sceneY = (clientY - rect.top) / scale;
+
+    this.a.insertImageAt(file, pageIndex, sceneX, sceneY);
   }
 
   clearLog(): void { this.a.clearLog(); }

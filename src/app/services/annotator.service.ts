@@ -9,13 +9,13 @@ import {
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 
-// xfdf-annotator's PDFRenderer falls back to a CDN URL that doesn't always
-// resolve (cdnjs hadn't published the matching pdf.js version at the time
-// this app was built). Pin the worker to the local copy that angular.json
-// emits to /assets/pdfjs/. This must run before DocumentAnnotator loads
-// any PDF — setting it at module scope is fine because pdfjsLib is a
-// singleton.
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdfjs/pdf.worker.min.mjs';
+// Pin the PDF.js worker to the local copy emitted by angular.json so we
+// never depend on a CDN. The leading slash makes this an absolute path
+// (relative to the origin), which is required for the browser to resolve
+// it correctly when used as a Worker URL regardless of the current route.
+// Module-scope assignment is fine because pdfjsLib is a singleton and this
+// runs before any PDF load.
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdfjs/pdf.worker.min.mjs';
 
 /**
  * Normalise an SVG data URL so the asset paints at its natural size.
